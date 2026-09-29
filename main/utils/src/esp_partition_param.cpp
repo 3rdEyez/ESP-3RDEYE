@@ -34,7 +34,7 @@ EspPartitionParam::EspPartitionParam(const std::string &partitionName) {
         if (pos != std::string::npos) {
             std::string key = line.substr(0, pos);
             std::string value = line.substr(pos + 1);
-            ESP_LOGI("EspPartitionParam", "key: %s, value: %s", key.c_str(), value.c_str());
+            ESP_LOGI("EspPartitionParam", "loaded key: %s", key.c_str());
             params[key] = value;
         }
     }
@@ -76,4 +76,3 @@ std::string EspPartitionParam::GetStringParam(const std::string &key, const std:
     }
     return defaultValue;
 }
-
