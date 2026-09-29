@@ -30,7 +30,7 @@ python3 ~/下载/设置Wifi/usb_diagnostic_capture.py capture \
 
 另有 `--rom-probe`（不上传 stub，读取 factory 起始 4096 字节）和 `--rom-backup`（不上传 stub，读取完整 2 MiB factory 分区）。这两个选项只用于排查/备份，读取到的 factory 内容也应按私有数据保护。`--rom-backup` 假定芯片已处于下载模式，使用 `--before no-reset`；如果前一个命令没有留下下载模式，就不能直接运行它。
 
-2026-09-29 实测：设备完全断电重开且换线后，仍在 esptool 上传 stub 时发生 I/O 错误和 USB `-71`；`--rom-probe` 在 18:24:08 成功读出 4096 字节，无新 USB 错误；18:25:04 的 `--rom-backup` 在实际读取前再次发生 I/O 错误，随后 `-71`。只有 4 KiB 短读，与旧 `full_flash.bin` 同地址开头一致；完整的当前 factory 备份仍未取得。不要以这次短读作为完整备份或烧录安全的证据。原始时间线保存在本地 `USB_ROM_PROBE_2026-09-29_1824.timeline.txt` 与 `USB_ROM_BACKUP_2026-09-29_1825.timeline.txt`。
+2026-09-29 实测：设备完全断电重开且换线后，仍在 esptool 上传 stub 时发生 I/O 错误和 USB `-71`；`--rom-probe` 在 18:24:08 成功读出 4096 字节，无新 USB 错误；18:25:04 的 `--rom-backup` 在实际读取前再次发生 I/O 错误，随后 `-71`。只有 4 KiB 短读，与旧 `full_flash.bin` 同地址开头一致；完整的当前 factory 备份仍未取得。测试期间舵机始终连接并供电；目前无法安全断开舵机，因此负载影响仍未排除。不要以这次短读作为完整备份或烧录安全的证据。原始时间线保存在本地 `USB_ROM_PROBE_2026-09-29_1824.timeline.txt` 与 `USB_ROM_BACKUP_2026-09-29_1825.timeline.txt`。
 
 每次采集输出私有目录，含 `timeline.txt`（便于人工看先后顺序）、`events.jsonl`（该时段完整内核消息及标记的墙上时钟和单调时钟时间戳）以及探测成功时的 `config-sector-readback.bin`。配置扇区可能含 Wi-Fi 凭据，不要公开上传整个目录；分享时间线前也先检查是否包含敏感信息。手动标记同时记录操作端时间 `operator_time` 和 journald 收到消息的时间，可以看到标记传递延迟。esptool 每行的时间是采集进程收到该行的时间，`phase` 行记录命令开始与退出时间；它不能还原一行内部每个字节发生的精确时间。
 
