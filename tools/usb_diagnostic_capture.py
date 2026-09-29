@@ -107,10 +107,33 @@ def capture(args):
         recorder.write("phase", "capture started")
         recorder.write("phase", f"idle observation: {args.idle_seconds}s")
         time.sleep(args.idle_seconds)
-        if args.probe:
+        if args.probe or args.rom_probe or args.rom_backup:
             if not Path(DEVICE_PORT).exists():
                 recorder.write("phase", f"probe skipped: {DEVICE_PORT} absent")
                 status = 2
+            elif args.rom_probe:
+                readback = output / "factory-first-sector-readback.bin"
+                status = run_esptool(
+                    recorder,
+                    [
+                        "--no-stub", "--after", "no-reset", "read-flash",
+                        "--no-progress", "0x10000", "0x1000", str(readback),
+                    ],
+                )
+                if readback.exists():
+                    os.chmod(readback, 0o600)
+            elif args.rom_backup:
+                backup = output / "factory-partition-backup.bin"
+                status = run_esptool(
+                    recorder,
+                    [
+                        "--no-stub", "--before", "no-reset", "--after", "no-reset",
+                        "read-flash", "--no-progress", "0x10000", "0x200000",
+                        str(backup),
+                    ],
+                )
+                if backup.exists():
+                    os.chmod(backup, 0o600)
             else:
                 status = run_esptool(recorder, ["--after", "no-reset", "flash-id"])
                 if status == 0:
@@ -148,7 +171,16 @@ def main():
     capture_parser.add_argument("--output", required=True, help="new private output directory")
     capture_parser.add_argument("--idle-seconds", type=int, default=30)
     capture_parser.add_argument("--after-seconds", type=int, default=15)
-    capture_parser.add_argument("--probe", action="store_true", help="run read-only esptool checks")
+    probes = capture_parser.add_mutually_exclusive_group()
+    probes.add_argument("--probe", action="store_true", help="run read-only esptool checks")
+    probes.add_argument(
+        "--rom-probe", action="store_true",
+        help="read factory's first sector using ROM without uploading a stub",
+    )
+    probes.add_argument(
+        "--rom-backup", action="store_true",
+        help="read the 2 MiB factory partition using ROM without a stub",
+    )
     mark_parser = sub.add_parser("mark", help="timestamp a manual unplug/reset event")
     mark_parser.add_argument("message", help="e.g. 'unplug complete' or 'RESET pressed'")
     args = parser.parse_args()
