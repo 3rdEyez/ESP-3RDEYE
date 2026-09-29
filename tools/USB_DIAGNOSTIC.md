@@ -1,4 +1,4 @@
-# Ciallo USB 断线取证
+# USB 断线取证（Ciallo / satori）
 
 时间戳修正（2026-09-29）：早期采集器误用了单下划线的 journald 字段，导致合并时间线中的内核时间实际是采集接收时间。现已改用 `__REALTIME_TIMESTAMP` / `__MONOTONIC_TIMESTAMP`，并从 journal 原记录生成 `*.corrected.timeline.txt`；先后顺序判断应使用修正版或原始 journal，不能使用早期合并时间线的亚秒顺序。esptool 的时间仍为逐行接收时间。
 
@@ -39,3 +39,9 @@ python3 ~/下载/设置Wifi/usb_diagnostic_capture.py capture \
 每次采集输出私有目录，含 `timeline.txt`（便于人工看先后顺序）、`events.jsonl`（该时段完整内核消息及标记的墙上时钟和单调时钟时间戳）以及探测成功时的 `config-sector-readback.bin`。配置扇区可能含 Wi-Fi 凭据，不要公开上传整个目录；分享时间线前也先检查是否包含敏感信息。手动标记同时记录操作端时间 `operator_time` 和 journald 收到消息的时间，可以看到标记传递延迟。esptool 每行的时间是采集进程收到该行的时间，`phase` 行记录命令开始与退出时间；它不能还原一行内部每个字节发生的精确时间。
 
 判读时先比较内核首次 `disconnect`/`-71`、esptool 启动、`Connecting`/stub/读取开始、错误和手动标记的顺序。若内核先报错，esptool 的串口 I/O 错误是后果；若 USB 在空闲观察时稳定、切换模式后开始报错，则继续区分模式切换和读传输阶段。单次相关性不能单独证明原因。
+
+## 18:44 最终结果更新
+
+用户换线后本机 USB `3-1` 稳定，Python 3.12.13 + esptool 4.8.1 ROM 模式完成 2 MiB 应用备份、4 MiB 整片备份、BLE 应用写入和 4 MiB 独立回读。应用备份交叉比较一致，写后非应用区域未改变。随后正常启动 BLE 0.2.2 并只读验证 GATT DeviceInfo。之前“完整备份未取得/尚未烧录”的段落仅描述早先失败尝试。详见 `../FLASHING.md`。
+
+`--rom-full-backup` 可读取完整 4 MiB Flash，前提同 `--rom-backup`：芯片已在下载模式。始终在仓库外的私有目录保存备份。

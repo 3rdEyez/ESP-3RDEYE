@@ -112,7 +112,7 @@ def capture(args):
         recorder.write("phase", "capture started")
         recorder.write("phase", f"idle observation: {args.idle_seconds}s")
         time.sleep(args.idle_seconds)
-        if args.probe or args.rom_probe or args.rom_backup:
+        if args.probe or args.rom_probe or args.rom_backup or args.rom_full_backup:
             if not Path(DEVICE_PORT).exists():
                 recorder.write("phase", f"probe skipped: {DEVICE_PORT} absent")
                 status = 2
@@ -127,13 +127,15 @@ def capture(args):
                 )
                 if readback.exists():
                     os.chmod(readback, 0o600)
-            elif args.rom_backup:
-                backup = output / "factory-partition-backup.bin"
+            elif args.rom_backup or args.rom_full_backup:
+                backup = output / ("full-flash-backup.bin" if args.rom_full_backup else "factory-partition-backup.bin")
                 status = run_esptool(
                     recorder,
                     [
                         "--no-stub", "--before", "no-reset", "--after", "no-reset",
-                        "read-flash", "--no-progress", "0x10000", "0x200000",
+                        "read-flash", "--no-progress",
+                        "0x0" if args.rom_full_backup else "0x10000",
+                        "0x400000" if args.rom_full_backup else "0x200000",
                         str(backup),
                     ],
                 )
@@ -185,6 +187,10 @@ def main():
     probes.add_argument(
         "--rom-backup", action="store_true",
         help="read the 2 MiB factory partition using ROM without a stub",
+    )
+    probes.add_argument(
+        "--rom-full-backup", action="store_true",
+        help="read all 4 MiB of flash using ROM without a stub",
     )
     mark_parser = sub.add_parser("mark", help="timestamp a manual unplug/reset event")
     mark_parser.add_argument("message", help="e.g. 'unplug complete' or 'RESET pressed'")

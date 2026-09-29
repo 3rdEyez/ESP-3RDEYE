@@ -1,3 +1,34 @@
+# 最新烧录结果：BLE 0.2.2（2026-09-29 18:44）
+
+已在本机 satori 完成新版 BLE 应用烧录。用户换线并改接 USB 路径 `3-1` 后，使用 Python 3.12.13、esptool 4.8.1、115200、`--no-stub --before no_reset --after no_reset` 完成连续读写。18:35:21 至验证结束未记录新的 USB 断开或 `-71`。本次同时改变了主机、线/端口和工具版本，只能确认该组合可用，不能单独归因于线材或 esptool。ModemManager 未停用。
+
+BLE 固件用 ESP-IDF 5.5.4 重新构建，现有配置/机械映射/启动目标/配对策略/BLE 协议与会话主机测试通过。镜像 `build/ble_primary/app.bin` 为 777440 字节，SHA-256：
+`81556796e455d7ff8a64ca063635a6d08960fad0ec8f09145438180ce3614039`。
+源码基线 `e8a493a`，构建时的已跟踪改动仅为 USB 诊断脚本。
+
+只写入应用地址 `0x10000`，保留设备原启动加载器与分区表。写后 esptool 哈希校验通过；独立回读整片 4 MiB 后，应用逐字节匹配，应用擦除区域之外的数据全部与烧前一致（包括 NVS 和舵机/网络配置）。启动后 BLE 按设计初始化自己的 NVS 数据，因此“保持一致”指首次启动前的回读结果。
+
+启动日志确认旧 ESP-IDF 5.3.1 bootloader 正常启动新 ESP-IDF 5.5.4 应用，BLE MAC `98:3D:AE:B5:D7:22`。本机扫描发现 `SatoriEye`，只读 GATT DeviceInfo 验证协议 1.2 / 固件 0.2.2。没有配对、ARM 或运动命令；手机配对、实际动作、后台与锁屏仍待验证。BLE 配置不启动 Wi-Fi。
+
+## 私有回退备份
+
+位于 `/home/kyle/.local/share/satori-backups/2026-09-29/`，目录受限，二进制不提交仓库：
+
+- `full-read/full-flash-backup.bin`：烧前完整 4194304 字节，SHA-256 `2cb2622288e2dcc2ff0ca0c7278d954e47f268f2190a21aaee0944664cdf3d54`。
+- `factory-before-flash.bin`：独立读取的 2097152 字节，与整片备份中的应用分区完全一致。
+- `nvs-before-flash.bin`、`config-before-flash.bin`：从已核对整片备份提取。
+- `ble-primary-to-flash.bin`：本次实际写入的固定镜像。
+- `ble-flash-verified/verification.json`、`ble-check.json`、`boot-serial.log`、`timeline.txt`：回读、BLE、启动与时间线证据。
+
+备份含凭据，不要公开上传。向 Ciallo 复制备份时 SSH 超时，因此本次完整备份目前只保存在本机。
+
+若需回退应用，使用现已验证的线和端口、同一 esptool 4.8.1 环境，以 `--no-stub` 进入下载模式，只将 `factory-before-flash.bin` 写回 `0x10000`，独立回读 2 MiB 比较后复位。`--before no_reset` 仅适用于已在下载模式的设备；正在运行应用时需先正常进入下载模式。不要整片擦除，也不要覆盖 config 或 NVS 来代替应用回退。
+
+本机 `/run/udev/rules.d/99-satori-serial-access.rules` 临时为该 VID/PID/序列号的 tty 节点授予 kyle 访问权限，重启后自动失效，不匹配其他设备。
+
+---
+以下为此前 Wi-Fi/UDP 版本准备及故障历史（已被上述实际烧录结果更新）：
+
 # ESP32-C3 应用固件烧录记录
 
 2026-09-29 使用 ESP-IDF v5.5.4 构建，目标 ESP32-C3、4 MB 闪存。
