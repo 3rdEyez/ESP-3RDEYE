@@ -10,6 +10,9 @@ std::string DataProcObj::ProcessMessage(const std::string& message)
     if (message == "SatoriEye_DISCOVERY_REQUEST") {
         return HandleDiscoveryRequest(message);
     }
+    if (message == "SatoriEye_HEARTBEAT_REQUEST") {
+        return "SatoriEye_HEARTBEAT_RESPONSE,50";
+    }
     if (message.starts_with("CH1")) {
         return HandleMoveRequest(message);
     }
@@ -21,7 +24,7 @@ std::string DataProcObj::HandleDiscoveryRequest(const std::string& message)
     int power = 50; // %50
     // TODO: power = PowerManager::GetPowerLevel();
     ESP_LOGI(TAG, "Discovery request received, power level: %d%%", power);
-    return "SatoriEye_DISCOVERY_RESPONSE," + std::to_string(power) +  "\n";
+    return "SatoriEye_DISCOVERY_RESPONSE," + std::to_string(power);
 }
 
 std::string DataProcObj::HandleMoveRequest(const std::string& message)
