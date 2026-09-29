@@ -66,17 +66,22 @@ def watch_journal(recorder, process):
             recorder.write(
                 "manual" if is_mark else "kernel",
                 message,
-                entry.get("_REALTIME_TIMESTAMP"),
-                entry.get("_MONOTONIC_TIMESTAMP"),
+                entry.get("__REALTIME_TIMESTAMP"),
+                entry.get("__MONOTONIC_TIMESTAMP"),
             )
 
 
 def run_esptool(recorder, args):
-    command = "esptool --chip esp32c3 --port " + shlex.quote(DEVICE_PORT)
+    executable = os.environ.get("SATORI_ESPTOOL", "esptool")
+    if os.environ.get("SATORI_ESPTOOL_V4") == "1":
+        names = {"no-reset": "no_reset", "read-flash": "read_flash", "flash-id": "flash_id"}
+        args = [names.get(arg, arg) for arg in args]
+    command = shlex.quote(executable) + " --chip esp32c3 --port " + shlex.quote(DEVICE_PORT)
     command += " --baud 115200 " + " ".join(shlex.quote(arg) for arg in args)
     recorder.write("phase", f"esptool start: {command}")
     process = subprocess.Popen(
-        ["sg", "dialout", "-c", command],
+        (["sh", "-c", command] if os.access(DEVICE_PORT, os.R_OK | os.W_OK)
+         else ["sg", "dialout", "-c", command]),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

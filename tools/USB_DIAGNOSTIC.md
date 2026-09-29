@@ -1,5 +1,9 @@
 # Ciallo USB 断线取证
 
+时间戳修正（2026-09-29）：早期采集器误用了单下划线的 journald 字段，导致合并时间线中的内核时间实际是采集接收时间。现已改用 `__REALTIME_TIMESTAMP` / `__MONOTONIC_TIMESTAMP`，并从 journal 原记录生成 `*.corrected.timeline.txt`；先后顺序判断应使用修正版或原始 journal，不能使用早期合并时间线的亚秒顺序。esptool 的时间仍为逐行接收时间。
+
+工具版本对照可设置 `SATORI_ESPTOOL` 为独立安装的可执行文件路径；若使用 esptool 4.x，另设 `SATORI_ESPTOOL_V4=1` 转换命令及复位选项名称。拥有串口直接访问权限时不再切换到 dialout 组。
+
 目标是把 Ciallo 的 USB 内核事件、esptool 原始输出和手动操作标记放到同一条时间线，确定失联发生在哪个阶段。脚本不写入 flash；各探测选项会通过 esptool 切换芯片模式，因此设备不在现场、且 `/dev/ttyACM0` 未出现时，不要运行探测。仅采集模式不会碰串口设备。
 
 先在 Ciallo 的一个终端开始采集（每次使用新的目录）：
