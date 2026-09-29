@@ -23,11 +23,13 @@ class ServoGroup
 {
 public:
     static ServoGroup &GetInstance(); // Singleton
-    void SetAngle(int servoIdx, float theta);
+    bool SetAngle(int servoIdx, float theta);
+    bool IsReady() const { return ready_; }
     void SetServoDataPreprocessor(int servoIdx, const ServoDataConfig &servoDataPreprocessor);
     void FiveTimesInterpolation(int servoIdx, float angleStart, float angleEnd, float duration);
 private:
     ServoGroup();
+    bool ready_{false};
     std::map<int, ServoDataConfig> m_servoDataPreprocessorMap;
 private:
 };

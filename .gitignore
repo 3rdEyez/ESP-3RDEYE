@@ -91,6 +91,7 @@ build
 
 # lock files for examples and components
 dependencies.lock
+!dependencies.lock
 
 # managed_components for examples
 # managed_components
@@ -110,6 +111,9 @@ XUNIT_RESULT*.xml
 .vale/styles/*
 
 sdkconfig*
+!sdkconfig.defaults
+!sdkconfig.ble_primary.defaults
+!sdkconfig.legacy_udp.defaults
 
 *.bin
 *.exe

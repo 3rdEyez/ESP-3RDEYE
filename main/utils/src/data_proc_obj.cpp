@@ -1,5 +1,6 @@
 #include "data_proc_obj.h"
 #include "servo_group.h"
+#include "legacy_target_parser.h"
 #include <cstring>
 #include "esp_log.h"
 
@@ -27,9 +28,12 @@ std::string DataProcObj::HandleDiscoveryRequest(const std::string& message)
 
 std::string DataProcObj::HandleMoveRequest(const std::string& message)
 {
-    int pulseWidth[3];
+    std::array<int, 3> pulseWidth{};
+    if (!ParseLegacyTarget(message, pulseWidth)) {
+        ESP_LOGW(TAG, "Rejected malformed/out-of-range legacy target");
+        return "ERROR:BAD_TARGET";
+    }
     float theta[3];
-    sscanf(message.c_str(), "CH1:%dCH2:%dCH3:%d", &pulseWidth[0], &pulseWidth[1], &pulseWidth[2]);
     // ESP_LOGI(TAG, "Move request received, pulse width: CH1:%d, CH2:%d, CH3:%d", pulseWidth[0], pulseWidth[1], pulseWidth[2]);
     for (int i = 0; i < 3; i++) {
         theta[i] = m_servoInputAdapter.PulseWidth2Angle(pulseWidth[i]);

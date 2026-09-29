@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "protocol": "SatoriEye BLE v1.2 shared pairing",
+  "warning": "Synthetic test inputs only; no real device secrets.",
+  "reads": [
+    {
+      "name": "shared_device_info",
+      "hex": "010200020201df0100001414d007701702030000",
+      "protocol_minor": 2,
+      "capabilities": 479,
+      "security_policy": 2,
+      "max_bonds": 8
+    }
+  ],
+  "rejection_cases": [
+    {
+      "name": "open_transfer_unsupported",
+      "hex": "0109020000007856341200000000000000000000",
+      "expected_result": 3
+    },
+    {
+      "name": "cancel_transfer_unsupported",
+      "hex": "010a020000007856341200000000000000000000",
+      "expected_result": 3
+    }
+  ],
+  "scenarios": [
+    "three_phones_same_code_bonds_retained",
+    "only_one_connection_no_takeover",
+    "disconnect_reenables_advertising",
+    "failed_connect_reenables_advertising",
+    "changed_code_retains_existing_bonds",
+    "old_code_cannot_enroll_new_phone",
+    "eight_bonds_full_no_eviction",
+    "non_sc_or_unbonded_denied",
+    "upgrade_keeps_existing_bonds",
+    "every_connection_auto_arms_configured_output",
+    "reconnect_auto_arms_without_action_replay",
+    "invalid_explicit_configuration_stays_connected_paused",
+    "pause_cancels_inflight_auto_start",
+    "no_user_configuration_uses_built_in_profile",
+    "maintenance_overrides_preserved",
+    "malformed_configuration_not_hidden_by_defaults"
+  ],
+  "built_in_profile": {
+    "id": "satori_c3_v1",
+    "logical_minimum": [
+      500,
+      500,
+      500
+    ],
+    "logical_maximum": [
+      2500,
+      2500,
+      2500
+    ],
+    "startup": [
+      1500,
+      1500,
+      1500
+    ],
+    "source": "Qt mobileclient.h MIN_PWM_VALUE/MAX_PWM_VALUE; mobileclient.cpp currentCH1/2/3"
+  }
+}

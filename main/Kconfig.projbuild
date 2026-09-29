@@ -157,3 +157,14 @@ menu "example UDP Configuration"
             Local port the example server will listen on.
 
 endmenu
+
+menu "SatoriEye transport"
+    choice SATORI_TRANSPORT
+        prompt "Control transport"
+        default SATORI_TRANSPORT_BLE_PRIMARY
+        config SATORI_TRANSPORT_BLE_PRIMARY
+            bool "BLE primary (single direct controller)"
+        config SATORI_TRANSPORT_LEGACY_UDP
+            bool "Legacy Wi-Fi UDP compatibility"
+    endchoice
+endmenu
