@@ -67,7 +67,7 @@ static void Arm(Session& session, std::uint32_t now = 10, std::uint32_t sequence
     auto result = session.Handle(bytes.data(), bytes.size(), now, true, pose, 0);
     assert(result.accepted && result.action_required && !result.has_reply);
     std::array<std::uint8_t, 20> reply{};
-    assert(session.CompleteAction(result.generation, sequence, true, reply));
+    assert(session.CompleteAction(result.generation, sequence, true, now, reply));
 }
 
 static void VerifyCommandAndReadVectors() {
@@ -156,6 +156,9 @@ static void VerifyManagementVectors() {
 
 static void VerifySharedPairingVectors() {
     assert(std::string(kBuiltInProfileId) == "satori_c3_v1");
+    assert(kSharedCommandTimeoutMs == 500 && kSharedCommandMaxRetries == 3);
+    assert(kSharedReleaseAckWindowMs == static_cast<int>(kReleaseAckWindowMs));
+    assert(std::string(kSharedReleaseAckWindowOrigin) == "action_completion");
     const auto profile = BuiltInStartupTarget();
     for (int i = 0; i < 3; ++i) {
         assert(profile.channels[i] == kBuiltInStartup[i]);
@@ -179,7 +182,13 @@ static void VerifySharedPairingVectors() {
         const auto result = session.Handle(bytes.data(), bytes.size(), 10, false, {}, 0);
         assert(result.result == Expected(vector.expected));
     }
-    assert(std::size(kSharedScenarios) == 16);
+    assert(std::size(kSharedScenarios) == 19);
+    const auto has_shared_scenario = [](const char* name) {
+        return std::any_of(std::begin(kSharedScenarios), std::end(kSharedScenarios),
+                           [name](const char* item) { return std::string(item) == name; });
+    };
+    assert(has_shared_scenario("release_lost_ack_replayed_with_default_retry_timing"));
+    assert(has_shared_scenario("release_window_starts_at_completion_and_does_not_extend"));
 }
 
 static Result Expected(const char* text) {
@@ -271,7 +280,7 @@ static void VerifyStateScenarios() {
     const auto keep_bytes = Encode(keep);
     assert(claim_session.Handle(keep_bytes.data(), 20, 11, true, {}, 0).accepted);
     std::array<std::uint8_t, 20> reply{};
-    assert(claim_session.CompleteAction(arm_out.generation, 2, true, reply));
+    assert(claim_session.CompleteAction(arm_out.generation, 2, true, 12, reply));
     assert(claim_session.Handle(arm_bytes.data(), 20, 12, true, {}, 0).has_reply);
 
     // Latest target may replace an unprocessed target; HALT is an immediate generation barrier.
@@ -289,8 +298,8 @@ static void VerifyStateScenarios() {
     Frame halt; halt.opcode = static_cast<std::uint8_t>(Opcode::Halt); halt.sequence = 6; halt.token = arm.token;
     const auto halt_bytes = Encode(halt); const auto stopped = claim_session.Handle(halt_bytes.data(), 20, 22, true, {}, 0);
     assert(stopped.accepted && stopped.generation != latest.generation);
-    assert(!claim_session.CompleteAction(latest.generation, 5, true, reply));
-    assert(claim_session.CompleteAction(stopped.generation, 6, true, reply));
+    assert(!claim_session.CompleteAction(latest.generation, 5, true, 23, reply));
+    assert(claim_session.CompleteAction(stopped.generation, 6, true, 23, reply));
     const auto halt_retry = claim_session.Handle(halt_bytes.data(), 20, 23, true, {}, 0);
     assert(halt_retry.duplicate && halt_retry.has_reply && halt_retry.reply == reply);
 
@@ -313,7 +322,7 @@ static void VerifyStateScenarios() {
     original = Encode(first);
     const auto first_target = eviction.Handle(original.data(), 20, 40, true, {}, 0);
     assert(first_target.accepted);
-    assert(eviction.CompleteAction(first_target.generation, 3, true, reply));
+    assert(eviction.CompleteAction(first_target.generation, 3, true, 40, reply));
     for (std::uint32_t i = 4; i <= 20; ++i) {
         Frame f; f.opcode = static_cast<std::uint8_t>(Opcode::Keepalive); f.sequence = i; f.token = eviction.snapshot().token;
         const auto bytes = Encode(f); assert(eviction.Handle(bytes.data(), 20, 40 + i, true, {}, 0).accepted);
@@ -328,7 +337,7 @@ static void VerifyStateScenarios() {
     assert(no_pose.snapshot().valid_mask == 0);
     const Target verified_pose{{1500, 1600, 1700}, 0};
     const auto verified_arm = no_pose.Handle(first_arm_bytes.data(), 20, 11, true, verified_pose, 0);
-    assert(verified_arm.accepted && no_pose.CompleteAction(verified_arm.generation, 2, true, reply));
+    assert(verified_arm.accepted && no_pose.CompleteAction(verified_arm.generation, 2, true, 11, reply));
     assert(no_pose.snapshot().valid_mask == 7);
 
     // Invalid traffic cannot extend the lease.
@@ -364,14 +373,65 @@ static void VerifyStateScenarios() {
     disconnected.Connect(SecurePeer(), true, 8000);
     assert(disconnected.snapshot().valid_mask == 7 && disconnected.snapshot().channels == held_output);
 
-    // RELEASE retries are acknowledged during grace but cannot resurrect CLAIM.
+    // RELEASE ACK grace starts after action completion, is fixed, and only
+    // permits exact replay of that RELEASE request.
     Session released; Claim(released); Arm(released);
     Frame release; release.opcode = static_cast<std::uint8_t>(Opcode::Release); release.sequence = 3; release.token = released.snapshot().token;
-    const auto release_bytes = Encode(release); auto release_out = released.Handle(release_bytes.data(), 20, 30, true, {}, 0);
-    assert(released.CompleteAction(release_out.generation, 3, true, reply));
-    auto replay = released.Handle(release_bytes.data(), 20, 31, true, {}, 0);
-    assert(replay.duplicate && replay.has_reply && replay.reply == reply);
-    assert(released.Handle(claim.data(), 20, 32, false, {}, 0x99999999).result == Result::BadSession);
+    const auto release_bytes = Encode(release);
+    const auto release_out = released.Handle(release_bytes.data(), 20, 30, true, {}, 0);
+    assert(release_out.accepted && release_out.action_required);
+    assert(released.CompleteAction(release_out.generation, 3, true, 10000, reply));
+    for (const std::uint32_t elapsed : {500u, 1500u, 2999u}) {
+        auto replay = released.Handle(release_bytes.data(), 20, 10000 + elapsed, true, {}, 0);
+        assert(replay.duplicate && replay.has_reply && replay.reply == reply);
+    }
+    const auto release_expired = 10000 + kReleaseAckWindowMs;
+    assert(released.Handle(release_bytes.data(), 20, release_expired, true, {}, 0).result == Result::BadSession);
+    assert(released.TickLease(release_expired));
+    assert(!released.connected() && released.snapshot().token == 0 && released.snapshot().valid_mask == 7);
+    assert(released.Handle(claim.data(), 20, 13001, false, {}, 0x99999999).result == Result::NotAuthorized);
+
+    // Released sessions do not replay other cached replies or accept new
+    // operations. Duplicate RELEASE retries never move the deadline.
+    Session replay_only; Claim(replay_only); Arm(replay_only);
+    Frame status_before; status_before.opcode = static_cast<std::uint8_t>(Opcode::GetStatus);
+    status_before.sequence = 3; status_before.token = replay_only.snapshot().token;
+    const auto status_before_bytes = Encode(status_before);
+    assert(replay_only.Handle(status_before_bytes.data(), 20, 20, false, {}, 0).accepted);
+    Frame release_only; release_only.opcode = static_cast<std::uint8_t>(Opcode::Release);
+    release_only.sequence = 4; release_only.token = replay_only.snapshot().token;
+    const auto release_only_bytes = Encode(release_only);
+    const auto release_only_out = replay_only.Handle(release_only_bytes.data(), 20, 21, false, {}, 0);
+    assert(replay_only.CompleteAction(release_only_out.generation, 4, true, 25, reply));
+    assert(replay_only.Handle(status_before_bytes.data(), 20, 26, false, {}, 0).result == Result::BadSession);
+    assert(replay_only.Handle(status_before_bytes.data(), 20, 27, false, {}, 0).result == Result::BadSession);
+    Frame stale_target; stale_target.opcode = static_cast<std::uint8_t>(Opcode::SetTarget);
+    stale_target.sequence = 5; stale_target.token = release_only.token;
+    P16(stale_target.payload.data(), 500); P16(stale_target.payload.data() + 2, 500); P16(stale_target.payload.data() + 4, 500);
+    const auto stale_target_bytes = Encode(stale_target);
+    const auto held_after_release = replay_only.snapshot().channels;
+    assert(replay_only.Handle(stale_target_bytes.data(), 20, 27, true, {}, 0).result == Result::BadSession);
+    assert(replay_only.snapshot().channels == held_after_release && replay_only.snapshot().token == 0);
+    assert(replay_only.Handle(release_only_bytes.data(), 20, 28, false, {}, 0).duplicate);
+    assert(replay_only.Handle(release_only_bytes.data(), 20, 25 + kReleaseAckWindowMs - 1, false, {}, 0).duplicate);
+    const auto replay_deadline = 25 + kReleaseAckWindowMs;
+    assert(replay_only.Handle(release_only_bytes.data(), 20, replay_deadline, false, {}, 0).result == Result::BadSession);
+    assert(replay_only.TickLease(replay_deadline));
+    assert(!replay_only.connected() && !replay_only.snapshot().token);
+
+    // Deadline arithmetic remains correct across uint32 wrap, and periodic
+    // lease polling also closes exactly at the fixed deadline.
+    Session release_wrap; Claim(release_wrap); Arm(release_wrap);
+    Frame wrap_release; wrap_release.opcode = static_cast<std::uint8_t>(Opcode::Release);
+    wrap_release.sequence = 3; wrap_release.token = release_wrap.snapshot().token;
+    const auto wrap_bytes = Encode(wrap_release);
+    const auto wrap_out = release_wrap.Handle(wrap_bytes.data(), 20, 50, false, {}, 0);
+    const std::uint32_t completion_wrap = 0xfffffff0u;
+    assert(release_wrap.CompleteAction(wrap_out.generation, 3, true, completion_wrap, reply));
+    const auto before_wrap_deadline = static_cast<std::uint32_t>(completion_wrap + kReleaseAckWindowMs - 1);
+    assert(release_wrap.Handle(wrap_bytes.data(), 20, before_wrap_deadline, false, {}, 0).duplicate);
+    const auto at_wrap_deadline = static_cast<std::uint32_t>(completion_wrap + kReleaseAckWindowMs);
+    assert(release_wrap.TickLease(at_wrap_deadline) && !release_wrap.connected());
 
     // Cold CLAIM never initializes outputs; repeated runtime snapshots are read-only.
     Session cold; Claim(cold);

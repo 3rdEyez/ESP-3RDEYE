@@ -7,6 +7,8 @@
 
 namespace satori::ble {
 
+constexpr std::uint32_t kReleaseAckWindowMs = 3000;
+
 struct Peer {
     std::array<std::uint8_t, 6> address{};
     bool encrypted{false}, authenticated{false}, bonded{false};
@@ -28,7 +30,7 @@ public:
     Outcome Handle(const std::uint8_t* bytes, std::size_t length, std::uint32_t now_ms,
                    bool startup_configured, const Target& startup_target, std::uint32_t claim_token);
     bool TickLease(std::uint32_t now_ms);
-    bool CompleteAction(std::uint32_t generation, std::uint32_t sequence, bool success,
+    bool CompleteAction(std::uint32_t generation, std::uint32_t sequence, bool success, std::uint32_t now_ms,
                         std::array<std::uint8_t, kFrameSize>& reply);
     bool FailAction(std::uint32_t generation, std::uint32_t sequence, Result result,
                     std::array<std::uint8_t, kFrameSize>& reply);

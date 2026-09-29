@@ -571,8 +571,9 @@ void ControlTask(void*) {
                 if (code_committed) {
                     g_identity.passkey = requested;
                     std::array<std::uint8_t, kFrameSize> reply{};
+                    const auto completed_at = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
                     portENTER_CRITICAL(&g_session_lock);
-                    const bool completed = g_session.CompleteAction(op.generation, op.request.sequence, true, reply);
+                    const bool completed = g_session.CompleteAction(op.generation, op.request.sequence, true, completed_at, reply);
                     portEXIT_CRITICAL(&g_session_lock);
                     if (completed) Notify(reply);
                 } else {
@@ -601,8 +602,9 @@ void ControlTask(void*) {
                 continue;
             }
             std::array<std::uint8_t, kFrameSize> reply{};
+            const auto completed_at = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
             portENTER_CRITICAL(&g_session_lock);
-            const bool completed = g_session.CompleteAction(op.generation, op.request.sequence, true, reply);
+            const bool completed = g_session.CompleteAction(op.generation, op.request.sequence, true, completed_at, reply);
             portEXIT_CRITICAL(&g_session_lock);
             if (completed) {
                 g_motion.SetLastSequence(op.request.sequence);
@@ -622,9 +624,10 @@ void ControlTask(void*) {
                 if (!write_output()) { fail_output(); continue; }
             }
             std::array<std::uint8_t, kFrameSize> ignored_reply{};
+            const auto completed_at = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
             portENTER_CRITICAL(&g_session_lock);
             const bool completed = g_session.CompleteAction(latest_target.generation,
-                latest_target.request.sequence, true, ignored_reply);
+                latest_target.request.sequence, true, completed_at, ignored_reply);
             portEXIT_CRITICAL(&g_session_lock);
             if (completed) {
                 g_motion.SetLastSequence(latest_target.request.sequence);

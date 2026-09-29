@@ -40,7 +40,10 @@
     "pause_cancels_inflight_auto_start",
     "no_user_configuration_uses_built_in_profile",
     "maintenance_overrides_preserved",
-    "malformed_configuration_not_hidden_by_defaults"
+    "malformed_configuration_not_hidden_by_defaults",
+    "pause_during_reconnect_backoff_persists_across_retries",
+    "release_lost_ack_replayed_with_default_retry_timing",
+    "release_window_starts_at_completion_and_does_not_extend"
   ],
   "built_in_profile": {
     "id": "satori_c3_v1",
@@ -60,5 +63,11 @@
       1500
     ],
     "source": "Qt mobileclient.h MIN_PWM_VALUE/MAX_PWM_VALUE; mobileclient.cpp currentCH1/2/3"
+  },
+  "timing": {
+    "command_timeout_ms": 500,
+    "command_max_retries": 3,
+    "release_ack_window_ms": 3000,
+    "release_ack_window_origin": "action_completion"
   }
 }

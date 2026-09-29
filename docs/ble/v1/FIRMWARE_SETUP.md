@@ -1,6 +1,6 @@
 # SatoriEye BLE A0/A1 firmware setup
 
-Protocol source of truth: [`SatoriEye_BLE_Protocol_v1.md`](SatoriEye_BLE_Protocol_v1.md), SHA-256 `dce99bbe98199781e6893fc59da95b22cd847ce549912f985c3fdaaf6c39065a`. Keep the Flutter mirror byte-identical. v1.0 golden vectors SHA-256: `9f6a9d4b9759c9b36a7ef9c7f6aa0412f15ec8a81cd96128faec62917edbb14e`; v1.1 management vectors SHA-256: `a8d2869740b370af3e003f086e0f076c1db16ef42ef95222f1bb543493d2ad8a`; v1.2 shared pairing vectors SHA-256: `29e0e4630dcbf503cb77b9c17689aa038673c0b916a456eec1b2e44a735bf9ed`.
+Protocol source of truth: [`SatoriEye_BLE_Protocol_v1.md`](SatoriEye_BLE_Protocol_v1.md), SHA-256 `13e6c166aa938bb8904dd58e30645c7dcce7678d977afa472c1075a84e1ec462`. Keep the Flutter mirror byte-identical. v1.0 golden vectors SHA-256: `9f6a9d4b9759c9b36a7ef9c7f6aa0412f15ec8a81cd96128faec62917edbb14e`; v1.1 management vectors SHA-256: `a8d2869740b370af3e003f086e0f076c1db16ef42ef95222f1bb543493d2ad8a`; v1.2 shared pairing vectors SHA-256: `0550f136fb109da8769a9a32ff3dfeb25f095e85419d9961e87a7c6a8982b9a7`.
 
 ## Build profiles
 

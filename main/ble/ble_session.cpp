@@ -59,6 +59,20 @@ Outcome Session::Handle(const std::uint8_t* bytes, std::size_t length, std::uint
     if (!Decode(bytes, length, req, decode_error)) { Outcome out; out.has_reply = false; out.result = Result::BadLength; return out; }
     Outcome out; out.request = req;
     if (!Authorized()) return Reject(req, Result::NotAuthorized);
+    if (released_) {
+        if (static_cast<std::int32_t>(now_ms - release_deadline_ms_) >= 0) {
+            return Reject(req, Result::BadSession);
+        }
+        const auto request_bytes = Encode(req);
+        for (const auto& entry : cache_) {
+            if (entry.used && entry.request == request_bytes &&
+                entry.request[1] == static_cast<std::uint8_t>(Opcode::Release)) {
+                out.reply = entry.reply; out.duplicate = true; out.accepted = true; out.result = Result::Ok;
+                return out;
+            }
+        }
+        return Reject(req, Result::BadSession);
+    }
     if (req.sequence == 0) return Reject(req, Result::OldSequence);
 
     const auto request_bytes = Encode(req);
@@ -150,7 +164,7 @@ Outcome Session::Handle(const std::uint8_t* bytes, std::size_t length, std::uint
     return out;
 }
 
-bool Session::CompleteAction(std::uint32_t generation, std::uint32_t sequence, bool success,
+bool Session::CompleteAction(std::uint32_t generation, std::uint32_t sequence, bool success, std::uint32_t now_ms,
                              std::array<std::uint8_t, kFrameSize>& reply) {
     if (!connected_ || !has_owner_ || generation != generation_ || !pending_action_valid_ ||
         sequence == 0 || sequence != pending_action_.sequence) return false;
@@ -176,7 +190,7 @@ bool Session::CompleteAction(std::uint32_t generation, std::uint32_t sequence, b
         return true;
     } else if (opcode == Opcode::Release) {
         const auto old_token = snapshot_.token;
-        released_ = true; release_deadline_ms_ = last_valid_ms_ + 500;
+        released_ = true; release_deadline_ms_ = now_ms + kReleaseAckWindowMs;
         snapshot_.interpolating_mask = 0; has_owner_ = false; snapshot_.token = 0; snapshot_.state = ControlState::Unclaimed;
         cache_ = {}; cache_cursor_ = 0;
         reply = EncodeReply(pending_action_, Result::Ok, snapshot_, old_token, true); Cache(pending_action_, reply);

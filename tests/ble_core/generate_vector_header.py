@@ -55,4 +55,9 @@ if shared is not None:
     for key, symbol in (("startup", "kBuiltInStartup"), ("logical_minimum", "kBuiltInMinimum"), ("logical_maximum", "kBuiltInMaximum")):
         values = ", ".join(str(int(value)) for value in profile[key])
         parts += [f'inline constexpr int {symbol}[3] = {{{values}}};']
+    timing = shared["timing"]
+    parts += [f'inline constexpr int kSharedCommandTimeoutMs = {int(timing["command_timeout_ms"])};']
+    parts += [f'inline constexpr int kSharedCommandMaxRetries = {int(timing["command_max_retries"])};']
+    parts += [f'inline constexpr int kSharedReleaseAckWindowMs = {int(timing["release_ack_window_ms"])};']
+    parts += [f'inline constexpr const char* kSharedReleaseAckWindowOrigin = {json.dumps(timing["release_ack_window_origin"])};']
 output.write_text("\n".join(parts) + "\n", encoding="utf-8")
