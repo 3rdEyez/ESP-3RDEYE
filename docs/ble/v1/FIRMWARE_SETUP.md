@@ -36,3 +36,5 @@ Rollback to `legacy_udp` requires a separately built legacy profile. The generat
 ## Validation status
 
 Host codec/session/motion tests consume the shared JSON corpus. Host legacy parser and config-value tests are independent. Target builds and actual hardware security, MTU 23, output range, lock-screen/background, and reconnection behavior must be recorded separately. No hardware flashing or motion test is implied by a successful software build.
+
+Hardware update (2026-09-29): BLE 0.2.2 has been flashed and tested with the satori Linux Bluetooth adapter. Pairing, authenticated GATT, session acknowledgements, bonded reconnect, and lease expiry passed without enabling outputs. See [hardware results](HARDWARE_TEST_2026-09-29.md); mobile and motion validation remain pending.
