@@ -4,13 +4,13 @@
 
 ## 构建
 
-使用 **ESP-IDF 5.5.4**，激活环境后运行对应配置：
+使用 **ESP-IDF 5.5.4**，先打开并激活 ESP-IDF 终端，再运行：
 
 ```sh
-tools/build_firmware.sh ble_primary
+python tools/build_firmware.py
 ```
 
-该命令只构建固件，不会烧录设备。构建旧版 UDP 固件时，使用 `tools/build_firmware.sh legacy_udp`。两种配置应分别构建。
+该命令默认只构建 BLE 固件，不会烧录设备。旧版 UDP 使用 `python tools/build_firmware.py legacy_udp`。脚本在 Windows、Linux 和 macOS 上调用已激活的 ESP-IDF，并分别保存两种配置的构建目录与 `sdkconfig`。Windows 请在 ESP-IDF PowerShell 或命令提示符中运行；ESP-IDF 5.5 的项目、工具链和 Python 安装路径不能包含空格或括号。
 
 ## 配对与使用
 

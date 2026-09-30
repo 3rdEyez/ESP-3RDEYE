@@ -1,6 +1,6 @@
 # Firmware build, backup, flash, and rollback
 
-Use ESP-IDF 5.5.4 and select one profile with `tools/build_firmware.sh ble_primary` or `tools/build_firmware.sh legacy_udp`. Review the generated partition table and flash arguments before writing. The BLE profile does not start Wi-Fi.
+Use an activated ESP-IDF 5.5.4 terminal and build BLE with `python tools/build_firmware.py` or legacy UDP with `python tools/build_firmware.py legacy_udp`. The same entry point works on Windows, Linux, and macOS. Review the generated partition table and flash arguments before writing. The BLE profile does not start Wi-Fi.
 
 Before flashing, back up the complete device flash and the separate NVS and board configuration partitions to a private directory outside the repository. These regions may contain network credentials, pairing data, and mechanical calibration. Keep the backups private and verify their sizes and hashes. Confirm that the board has a stable USB serial connection and can enter the ROM download mode.
 

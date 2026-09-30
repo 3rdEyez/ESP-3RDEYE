@@ -1,0 +1,26 @@
+name: Firmware build entry
+
+on:
+  push:
+    paths:
+      - tools/build_firmware.py
+      - tests/test_build_firmware.py
+      - .github/workflows/build-entry.yml
+  pull_request:
+    paths:
+      - tools/build_firmware.py
+      - tests/test_build_firmware.py
+      - .github/workflows/build-entry.yml
+
+jobs:
+  entry:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -p test_build_firmware.py -v

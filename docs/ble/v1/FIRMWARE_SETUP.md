@@ -6,14 +6,14 @@ Protocol source of truth: [`SatoriEye_BLE_Protocol_v1.md`](SatoriEye_BLE_Protoco
 
 The mutually-exclusive `SATORI_TRANSPORT` Kconfig choice selects `ble_primary` or `legacy_udp`. Build directories and sdkconfig files must stay separate. BLE profile defaults to blank Wi-Fi credentials and does not start Wi-Fi.
 
-With ESP-IDF 5.5.4 activated (the build helper rejects other versions):
+With ESP-IDF 5.5.4 activated (the Python entry point rejects other versions), run these commands in an ESP-IDF terminal on Windows, Linux, or macOS:
 
 ```sh
-tools/build_firmware.sh ble_primary
-tools/build_firmware.sh legacy_udp
+python tools/build_firmware.py
+python tools/build_firmware.py legacy_udp
 ```
 
-Neither build command flashes a board. The helper keeps each ignored sdkconfig under its profile build directory and never reads a developer's root sdkconfig, which may contain Wi-Fi credentials. BLE uses NimBLE LE Secure Connections, display-only six-digit passkey, up to eight saved phone bonds, one active central link, and encrypted/authenticated characteristics. Any saved phone may connect while the device is idle; a ninth phone is rejected and bonds are never automatically evicted.
+The first command defaults to `ble_primary`; neither command flashes a board. The helper keeps each ignored sdkconfig under its profile build directory and never reads a developer's root sdkconfig, which may contain Wi-Fi credentials. On Windows, use the activated ESP-IDF PowerShell or Command Prompt; ESP-IDF 5.5 requires project, IDF, and Python installation paths without spaces or parentheses. BLE uses NimBLE LE Secure Connections, display-only six-digit passkey, up to eight saved phone bonds, one active central link, and encrypted/authenticated characteristics. Any saved phone may connect while the device is idle; a ninth phone is rejected and bonds are never automatically evicted.
 
 ## Initialize identity and pair
 
