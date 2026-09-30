@@ -7,14 +7,6 @@ config = configparser.ConfigParser()
 # Read the configuration file with UTF-8 encoding
 config.read('config.ini', encoding='utf-8')
 
-# Get the Wi-Fi name and password
-wifi_ssid = config.get('DEFAULT', 'ESP_WIFI_SSID')
-wifi_password = config.get('DEFAULT', 'ESP_WIFI_PASSWORD')
-
-# Output the read values
-print(f"WiFi SSID: {wifi_ssid}")
-print(f"WiFi Password: {wifi_password}")
-
 # Get the COM port
 esp_com_port = config.get('DEFAULT', 'ESP_COM_PORT')
 
