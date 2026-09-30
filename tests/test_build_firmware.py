@@ -20,6 +20,9 @@ class BuildFirmwareEntryTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / "project"
         (self.root / "tools").mkdir(parents=True)
+        # On Windows, resolve expands any short (8.3) path aliases just as
+        # the entry point does when locating its own project directory.
+        self.root = self.root.resolve()
         shutil.copyfile(SOURCE, self.root / "tools" / "build_firmware.py")
         for name in ("sdkconfig.defaults", "sdkconfig.ble_primary.defaults",
                      "sdkconfig.legacy_udp.defaults"):
