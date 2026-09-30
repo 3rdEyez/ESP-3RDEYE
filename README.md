@@ -1,59 +1,38 @@
 # ESP-3RDEYE 项目
 
-## 项目简介
+本项目是“机械觉之瞳”的 ESP32 固件，使用 ESP-IDF 控制三路舵机。固件提供 BLE 与旧版 UDP 两种互斥通信配置；新设备和日常使用推荐 **BLE（`ble_primary`）**。`legacy_udp` 仅用于需要兼容旧版 APP 或受控网络环境的场景。
 
-本项目是“机械觉之瞳”的ESP32版本配套工程，基于ESP-IDF开发。本项目支持多种ESP32系列芯片，包括ESP32-C3，并使用LEDC作为PWM源来控制三路舵机。
+## 构建
 
-## 开发环境
+使用 **ESP-IDF 5.5.4**，先打开并激活 ESP-IDF 终端，再运行：
 
-- **开发语言**：C/C++，使用了部分C++特性，如虚函数、`std::thread`等。使用时请注意兼容性。
-- **通信协议**：通过UDP协议与APP进行交互，详细内容见【报文格式】。
-- **分区表**：使用自定义的`partitions.csv`分区表，分配2MB空间用于存放代码。
+```sh
+python tools/build_firmware.py
+```
 
-## 注意事项
+该命令默认只构建 BLE 固件，不会烧录设备。旧版 UDP 使用 `python tools/build_firmware.py legacy_udp`。脚本在 Windows、Linux 和 macOS 上调用已激活的 ESP-IDF，并分别保存两种配置的构建目录与 `sdkconfig`。Windows 请在 ESP-IDF PowerShell 或命令提示符中运行；ESP-IDF 5.5 的项目、工具链和 Python 安装路径不能包含空格或括号。
 
-在开始之前，请确保已配置好Wi-Fi、舵机引脚、LED引脚以及UDP端口号。
+## 配对与使用
 
-### 配置步骤
+BLE 首次配对、连接和固件设置请参阅[固件设置与配对指南](docs/ble/v1/FIRMWARE_SETUP.md)。BLE 帧格式和连接流程见 [SatoriEye BLE Control v1.2 协议](docs/ble/v1/SatoriEye_BLE_Protocol_v1.md)。固件构建、备份、烧录和回滚说明见[烧录指南](FLASHING.md)。
 
-1. 使用`idf.py menuconfig`配置项目。
-2. 配置Wi-Fi：在`Example Configuration`菜单中，选择`WiFi SSID`和`WiFi Password`。
-3. 配置舵机PWM引脚和LED引脚：同样在`Example Configuration`菜单中，设置`Servo pulse GPIO pitch`、`Servo pulse GPIO roll`、`Servo pulse GPIO yaw`和`Blink GPIO number`。
-4. 配置UDP端口号：在`Example UDP Configuration`菜单中，设置`Port`。
+## 旧版 UDP 报文（legacy）
 
-### 编译与烧录
-
-配置完成后，您可以编译代码并烧录到ESP32-C3开发板上。
-
-### 报文格式
+下表只描述 `legacy_udp` 配置使用的旧版文本报文，不适用于推荐的 BLE 配置。只有构建并启用 `legacy_udp` 时，才按对应旧版客户端约定使用这些报文。
 
 | 报文类型 | 报文内容 | 说明 |
 | --- | --- | --- |
-| 发现请求 | SatoriEye_DISCOVERY_REQUEST | 客户端发送的请求，寻找可用的机器人服务器。 |
-| 发现响应 | SatoriEye_DISCOVERY_RESPONSE,<电量信息> | 服务器的响应，包含电量信息（如 85 表示 85%）。 |
-| 心跳请求 | SatoriEye_HEARTBEAT_REQUEST | 客户端发送的心跳请求，确保连接的有效性。 |
-| 心跳响应 | SatoriEye_HEARTBEAT_RESPONSE,<电量信息（可选）> | 服务器的响应，可能包含电量信息，表示连接正常。 |
-| 设置模式命令 | SET_MODE:<模式> | 客户端发送的请求，用于设置机器人工作模式（如 Auto）。 |
-| 设置模式成功响应 | SET_MODE_SUCCESS:<模式> | 服务器确认模式设置成功（如 SET_MODE_SUCCESS:Auto）。 |
-| 断开连接 | SatoriEye_DISCONNECT | 客户端发送的请求，通知服务器断开连接。 |
-| 眨眼命令 | WINK | 客户端发送的命令，指示机器人执行眨眼动作。 |
-| PWM 控制消息 | CH1:<值>CH2:<值>CH3:<值> | 发送通道 PWM 值，用于控制眼部运动（范围 500-2500 微秒）。 |
-
-**假设要设置通道 PWM 值如下：**
-
-- CH1: 600（水平眼球运动）
-- CH2: 2200（垂直眼球运动）
-- CH3: 1600（上眼皮运动）
-
-**发送格式为：**
-
-```
-CH1:600CH2:2200CH3:1600
-```
+| 发现请求（legacy） | `SatoriEye_DISCOVERY_REQUEST` | 客户端搜索旧版 UDP 服务。 |
+| 发现响应（legacy） | `SatoriEye_DISCOVERY_RESPONSE,<电量信息>` | 服务端响应，可能包含电量信息。 |
+| 心跳请求（legacy） | `SatoriEye_HEARTBEAT_REQUEST` | 旧版客户端心跳。 |
+| 心跳响应（legacy） | `SatoriEye_HEARTBEAT_RESPONSE,<电量信息（可选）>` | 旧版服务端心跳响应。 |
+| 设置模式（legacy） | `SET_MODE:<模式>` | 旧版模式设置命令。 |
+| 设置模式成功（legacy） | `SET_MODE_SUCCESS:<模式>` | 旧版模式设置确认。 |
+| 断开连接（legacy） | `SatoriEye_DISCONNECT` | 旧版断开通知。 |
+| 眨眼命令（legacy） | `WINK` | 旧版眨眼命令。 |
+| PWM 控制（legacy） | `CH1:<值>CH2:<值>CH3:<值>` | 旧版三通道控制报文，逻辑值范围为 500–2500。 |
 
 ## 相关资源
 
-- **「开源」机械觉之瞳**：[哔哩哔哩视频](https://www.bilibili.com/video/BV1rN1gYJE3K)
-- **配套安卓APP**：由【阿卡林真的是太可爱了】开发，[GitHub项目地址](https://github.com/AkazaAkali)
-
-祝您玩得开心！
+- [「开源」机械觉之瞳视频](https://www.bilibili.com/video/BV1rN1gYJE3K)
+- [配套安卓 APP 项目](https://github.com/AkazaAkali)

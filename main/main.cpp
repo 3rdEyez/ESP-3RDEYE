@@ -16,6 +16,7 @@
 #include "esp_flash.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "nvs_bootstrap.h"
 
 #include "connect_wifi.h"
 #include "servo_group.h"
@@ -24,6 +25,9 @@
 #include "esp_thread_helper.h"
 
 #include "esp_partition_param.h"
+#if CONFIG_SATORI_TRANSPORT_BLE_PRIMARY
+#include "ble_server.h"
+#endif
 
 static const char *TAG = "APP MAIN";
 
@@ -62,6 +66,25 @@ void greeting(void)
 extern "C" void app_main(void)
 {
     greeting();
+#if CONFIG_SATORI_TRANSPORT_BLE_PRIMARY
+    const esp_err_t nvs_result = InitializeSharedNvs();
+    if (nvs_result != ESP_OK) {
+        ESP_LOGE(TAG, "NVS unavailable (%s). No erase was attempted; use USB maintenance after reviewing storage state.", esp_err_to_name(nvs_result));
+        StartBleMaintenanceConsole();
+        return;
+    }
+    ESP_LOGI(TAG, "Starting BLE primary transport (Wi-Fi remains off)");
+    const esp_err_t ble_result = StartBlePrimary();
+    if (ble_result != ESP_OK) {
+        ESP_LOGE(TAG, "BLE service did not start (%s); leaving outputs disabled.", esp_err_to_name(ble_result));
+        return;
+    }
+#else
+    const esp_err_t nvs_result = InitializeSharedNvs();
+    if (nvs_result != ESP_OK) {
+        ESP_LOGE(TAG, "NVS unavailable (%s); refusing to start legacy UDP output.", esp_err_to_name(nvs_result));
+        return;
+    }
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     LedController::GetInstance().SetColor(50, 0, 0);
     connect_wifi();
@@ -76,4 +99,5 @@ extern "C" void app_main(void)
     }, 8192);
 
     th.PrintInfo();
+#endif
 }

@@ -15,7 +15,6 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
-#include "nvs_flash.h"
 
 #include "lwip/err.h"
 #include "lwip/sys.h"
@@ -123,10 +122,14 @@ void wifi_init_sta(void)
     memset(&wifi_config, 0, sizeof(wifi_config));
     std::string ssid =  EspPartitionParam::GetInstance().GetStringParam("ESP_WIFI_SSID", EXAMPLE_ESP_WIFI_SSID);
     std::string password =  EspPartitionParam::GetInstance().GetStringParam("ESP_WIFI_PASSWORD", EXAMPLE_ESP_WIFI_PASS);
-    memcpy(wifi_config.sta.ssid, ssid.c_str(), strlen(ssid.c_str()));
-    ESP_LOGI(TAG, "strlen(ssid.c_str()): %d", strlen(ssid.c_str()));
-    ESP_LOGI(TAG, "ssid: %s", wifi_config.sta.ssid);
-    memcpy(wifi_config.sta.password, password.c_str(), strlen(password.c_str()));
+    if (ssid.empty() || ssid.size() > sizeof(wifi_config.sta.ssid) ||
+        password.size() > sizeof(wifi_config.sta.password) ||
+        strlen(EXAMPLE_H2E_IDENTIFIER) >= sizeof(wifi_config.sta.sae_h2e_identifier)) {
+        ESP_LOGE(TAG, "Wi-Fi configuration is missing or exceeds field limits");
+        return;
+    }
+    memcpy(wifi_config.sta.ssid, ssid.data(), ssid.size());
+    memcpy(wifi_config.sta.password, password.data(), password.size());
     wifi_config.sta.threshold.authmode = ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD;
     wifi_config.sta.sae_pwe_h2e = ESP_WIFI_SAE_MODE;
     memcpy(wifi_config.sta.sae_h2e_identifier, EXAMPLE_H2E_IDENTIFIER, strlen(EXAMPLE_H2E_IDENTIFIER));
@@ -148,11 +151,9 @@ void wifi_init_sta(void)
     /* xEventGroupWaitBits() returns the bits before the call returned, hence we can test which event actually
      * happened. */
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "connected to ap SSID:%s password:%s",
-                 ssid.c_str(), password.c_str());
+        ESP_LOGI(TAG, "Connected to configured access point");
     } else if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGI(TAG, "Failed to connect to SSID:%s, password:%s",
-                 ssid.c_str(), password.c_str());
+        ESP_LOGI(TAG, "Failed to connect to configured access point");
     } else {
         ESP_LOGE(TAG, "UNEXPECTED EVENT");
     }
@@ -160,14 +161,6 @@ void wifi_init_sta(void)
 
 void connect_wifi(void)
 {
-    //Initialize NVS
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-      ESP_ERROR_CHECK(nvs_flash_erase());
-      ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();
 }
