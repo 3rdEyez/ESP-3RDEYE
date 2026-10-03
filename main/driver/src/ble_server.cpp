@@ -11,6 +11,7 @@
 #include "maintenance_stop.hpp"
 #if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
 #include "wifi_ota_service.hpp"
+#include "mbedtls/platform_util.h"
 #endif
 #include "servo_group.h"
 #include "servor_input_adapter.h"
@@ -53,6 +54,7 @@ static const ble_uuid128_t kTxUuid = BLE_UUID128_INIT(0x04,0x00,0x5a,0x14,0xb2,0
 static const ble_uuid128_t kStateUuid = BLE_UUID128_INIT(0x05,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
 static const ble_uuid128_t kDiagnosticsUuid = BLE_UUID128_INIT(0x06,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
 #if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
+static const ble_uuid128_t kLanUuid = BLE_UUID128_INIT(0x08,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
 static const ble_uuid128_t kOtaUuid = BLE_UUID128_INIT(0x07,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
 #endif
 void StartAdvertising();
@@ -119,6 +121,25 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
     if (conn_handle != g_runtime.connection.load(std::memory_order_acquire)) return BLE_ATT_ERR_UNLIKELY;
     const ble_uuid_t* uuid = ctxt->chr ? ctxt->chr->uuid : nullptr;
 #if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
+    if (ble_uuid_cmp(uuid,&kLanUuid.u)==0) {
+        ble_gap_conn_desc desc{};
+        if(ble_gap_conn_find(conn_handle,&desc)!=0||!AuthorizedSecurePeer(desc))return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+        if(ctxt->op==BLE_GATT_ACCESS_OP_READ_CHR) {
+            std::array<std::uint8_t,56> bytes{};const auto size=satori::ota::ReadLanOtaStatus(bytes.data(),bytes.size());
+            const int result=size&&os_mbuf_append(ctxt->om,bytes.data(),size)==0?0:BLE_ATT_ERR_INSUFFICIENT_RES;
+            mbedtls_platform_zeroize(bytes.data(),bytes.size());return result;
+        }
+        if(ctxt->op==BLE_GATT_ACCESS_OP_WRITE_CHR) {
+            std::array<std::uint8_t,107> bytes{};const auto size=OS_MBUF_PKTLEN(ctxt->om);
+            if(size<12||size>bytes.size())return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            if(os_mbuf_copydata(ctxt->om,0,size,bytes.data())!=0){mbedtls_platform_zeroize(bytes.data(),bytes.size());return BLE_ATT_ERR_UNLIKELY;}
+            satori::ota::LanCommand command{};const bool valid=satori::ota::DecodeLanCommand(bytes.data(),size,command);
+            mbedtls_platform_zeroize(bytes.data(),bytes.size());
+            const bool accepted=valid&&satori::ota::SubmitLanOtaCommand(conn_handle,command);
+            mbedtls_platform_zeroize(&command,sizeof(command));return accepted?0:BLE_ATT_ERR_UNLIKELY;
+        }
+        return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
+    }
     if (ble_uuid_cmp(uuid,&kOtaUuid.u)==0) {
         ble_gap_conn_desc desc{};
         if (ble_gap_conn_find(conn_handle,&desc)!=0||!AuthorizedSecurePeer(desc)) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
@@ -147,7 +168,7 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
             id = EncodeIdentity(ReadIdentity().id); return os_mbuf_append(ctxt->om, id.data(), id.size()) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
         if (ble_uuid_cmp(uuid, &kInfoUuid.u) == 0) {
-            DeviceInfo info; info.firmware_major = 0; info.firmware_minor = 2; info.firmware_patch = 5;
+            DeviceInfo info; info.firmware_major = 0; info.firmware_minor = 2; info.firmware_patch = 6;
             info.protocol_minor = 2;
             info.capabilities = 0x5f | kCapabilityPairingCodeManagement | kCapabilitySharedMultiBond;
             info.security_policy = 2;
@@ -210,7 +231,7 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
     return ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR ? BLE_ATT_ERR_READ_NOT_PERMITTED : BLE_ATT_ERR_WRITE_NOT_PERMITTED;
 }
 
-static ble_gatt_chr_def kCharacteristics[8]{};
+static ble_gatt_chr_def kCharacteristics[9]{};
 static ble_gatt_svc_def kServices[2]{};
 void ConfigureGattTable() {
     kCharacteristics[0].uuid = &kIdentityUuid.u; kCharacteristics[0].access_cb = GattAccess; kCharacteristics[0].flags = BLE_GATT_CHR_F_READ;
@@ -229,6 +250,11 @@ void ConfigureGattTable() {
 #if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
     kCharacteristics[6].uuid=&kOtaUuid.u;kCharacteristics[6].access_cb=GattAccess;
     kCharacteristics[6].flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_ENC|BLE_GATT_CHR_F_READ_AUTHEN|
+        BLE_GATT_CHR_F_WRITE|BLE_GATT_CHR_F_WRITE_ENC|BLE_GATT_CHR_F_WRITE_AUTHEN;
+#endif
+#if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
+    kCharacteristics[7].uuid=&kLanUuid.u;kCharacteristics[7].access_cb=GattAccess;
+    kCharacteristics[7].flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_ENC|BLE_GATT_CHR_F_READ_AUTHEN|
         BLE_GATT_CHR_F_WRITE|BLE_GATT_CHR_F_WRITE_ENC|BLE_GATT_CHR_F_WRITE_AUTHEN;
 #endif
     kServices[0].type = BLE_GATT_SVC_TYPE_PRIMARY; kServices[0].uuid = &kServiceUuid.u; kServices[0].characteristics = kCharacteristics;

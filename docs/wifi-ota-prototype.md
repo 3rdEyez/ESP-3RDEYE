@@ -1,3 +1,5 @@
+> Local 0.2.6 adds computer-first LAN maintenance with RAM-only App provisioning; see [LAN OTA](lan-ota.md). Installed device remains signed 0.2.5. AP below is explicit fallback.
+
 # Explicit BLE-controlled Wi-Fi OTA (local candidate)
 
 The local 0.2.5 implementation now includes the product entry: authenticated BLE

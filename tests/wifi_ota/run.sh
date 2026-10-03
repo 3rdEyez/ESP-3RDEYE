@@ -15,3 +15,6 @@ for policy in 0 1; do
         "$ROOT/tests/wifi_ota/adapter_test.cpp" "$ROOT/main/ota/ota_idf_sink.cpp" -o "$OUT"
     "$OUT"
 done
+${CXX:-c++} -std=c++17 -Wall -Wextra -Werror -pedantic \
+    -I"$ROOT/main/ota" "$ROOT/tests/wifi_ota/lan_protocol_test.cpp" -o "$OUT"
+"$OUT"
