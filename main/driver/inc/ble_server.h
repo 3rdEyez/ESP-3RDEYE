@@ -6,7 +6,10 @@ void StartBleMaintenanceConsole();
 void SetBleBootControlAllowed(bool allowed);
 bool BleStartupHealthy();
 unsigned BleControlCycleCount();
-// Local prototype only: future authenticated BLE worker may explicitly enter.
+// Maintenance uses a worker; normal control requires a fresh CLAIM afterwards.
 bool BeginBleOtaMaintenance(unsigned short peer);
 bool BleOtaMaintenanceStopped();
 bool BleOtaPeerStillAuthorized(unsigned short peer);
+
+void EndBleOtaMaintenance();
+unsigned BleOtaConnectionEpoch();

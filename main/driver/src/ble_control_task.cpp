@@ -74,13 +74,14 @@ void ControlTask(void*) {
     while (true) {
         g_runtime.control_cycles.fetch_add(1, std::memory_order_relaxed);
         if (g_runtime.ota_maintenance_requested.load(std::memory_order_acquire)) {
+            const auto maintenance_epoch=g_runtime.ota_maintenance_epoch.load(std::memory_order_acquire);
             std::uint32_t stopped_generation;
             portENTER_CRITICAL(&g_runtime.session_lock);
             stopped_generation=g_runtime.session.generation();
             portEXIT_CRITICAL(&g_runtime.session_lock);
             g_runtime.motion.Halt(stopped_generation);
             motion_generation=stopped_generation;
-            g_runtime.ota_maintenance_stopped.store(true,std::memory_order_release);
+            g_runtime.ota_stopped_epoch.store(maintenance_epoch,std::memory_order_release);
             vTaskDelayUntil(&last,pdMS_TO_TICKS(10));
             continue; // no queue action, interpolated output, ARM or auto-resume
         }

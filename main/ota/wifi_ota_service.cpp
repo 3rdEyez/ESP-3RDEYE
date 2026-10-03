@@ -16,17 +16,31 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "cJSON.h"
 #include "mbedtls/platform_util.h"
 
 namespace satori::ota {
 namespace {
 std::atomic<bool> active{false},cancelled{false},restart_requested{false};
-std::uint32_t started_ms{0};
+std::atomic<std::uint32_t> started_ms{0};
 SessionCredentials credentials{};
 httpd_handle_t server{nullptr};
 esp_netif_t* ap{nullptr};
 constexpr std::uint32_t kSessionMs=120000;
+portMUX_TYPE status_lock=portMUX_INITIALIZER_UNLOCKED;
+WindowStatus window_status{};
+QueueHandle_t commands{nullptr};
+SemaphoreHandle_t commit_lock{nullptr};
+struct CommandWork { std::uint16_t peer;WindowCommand command;std::uint32_t connection_epoch; };
+WindowProtocol protocol{}; // command worker only
+void Status(WindowState state,WindowResult result=WindowResult::Ok) {
+    portENTER_CRITICAL(&status_lock);window_status.state=state;window_status.result=result;portEXIT_CRITICAL(&status_lock);
+}
+WindowStatus Snapshot() {
+    portENTER_CRITICAL(&status_lock);const auto value=window_status;portEXIT_CRITICAL(&status_lock);return value;
+}
 std::uint32_t Now() { return static_cast<std::uint32_t>(esp_timer_get_time()/1000); }
 bool Alive() {
     return active&&!cancelled&&!restart_requested&&static_cast<std::uint32_t>(Now()-started_ms)<kSessionMs&&
@@ -81,6 +95,7 @@ esp_err_t Upload(httpd_req_t* req) {
         std::strcmp(confirmation,"confirm-restart")!=0) {
         cancelled=true;return httpd_resp_send_err(req,HTTPD_400_BAD_REQUEST,"Explicit install confirmation required");
     }
+    Status(WindowState::Uploading);
     IdfOtaSink sink(manifest,Alive);Transfer transfer(sink);
     const Manifest core{"satori_c3_v1","esp32c3",sink.update_slot(),manifest.image_size,manifest.sha256};
     if (!transfer.Start(core,{true,BleOtaMaintenanceStopped(),sink.running_slot(),sink.running_valid()},Now(),kSessionMs)) {
@@ -97,25 +112,40 @@ esp_err_t Upload(httpd_req_t* req) {
         }
         remaining-=static_cast<std::size_t>(count);
     }
-    if (!Alive()||!transfer.Finalize(Now())) {
-        cancelled=true;return httpd_resp_send_err(req,HTTPD_400_BAD_REQUEST,"Image validation failed");
+    // Serialize close with the final verification/boot selection. A close that
+    // loses to a successful commit receives Busy, never a false cancellation.
+    xSemaphoreTake(commit_lock,portMAX_DELAY);
+    const bool finalized=Alive()&&transfer.Finalize(Now());
+    if (finalized) { restart_requested=true;Status(WindowState::Committed); }
+    xSemaphoreGive(commit_lock);
+    if (!finalized) {
+        cancelled=true;Status(WindowState::Failed,WindowResult::Invalid);
+        return httpd_resp_send_err(req,HTTPD_400_BAD_REQUEST,"Image validation failed");
     }
     // The explicit request permits install+restart. The supervisor closes the
     // server/AP before reboot; an ACK lost here must never auto-retry upload.
-    const auto result=httpd_resp_sendstr(req,"Installed; restarting for startup validation");
-    restart_requested=true;return result;
+    const auto result=httpd_resp_sendstr(req,"镜像已验签并写入，正在重启；请重新连接后确认固件版本与启动结果。");
+    return result;
 }
 void Teardown() {
     if (server) { (void)httpd_stop(server);server=nullptr; }
     (void)esp_wifi_stop();(void)esp_wifi_deinit();
     if (ap) { esp_netif_destroy_default_wifi(ap);ap=nullptr; }
+    portENTER_CRITICAL(&status_lock);
     mbedtls_platform_zeroize(credentials.password,sizeof(credentials.password));
-    credentials={};active=false;
-    // BLE maintenance remains latched; no lease/queued target is restored.
+    credentials={};window_status.remaining_ms=0;
+    portEXIT_CRITICAL(&status_lock);
+    if (!restart_requested) EndBleOtaMaintenance();
+    active=false;
+    if (!restart_requested) Status(WindowState::Closed);
+    // Motion is not restored; normal control requires a new CLAIM and ARM.
 }
 void Supervisor(void*) {
     while (Alive()&&!restart_requested) vTaskDelay(pdMS_TO_TICKS(100));
-    const bool restart=restart_requested.load();cancelled=true;Teardown();
+    xSemaphoreTake(commit_lock,portMAX_DELAY);
+    const bool restart=restart_requested.load();cancelled=true;
+    xSemaphoreGive(commit_lock);
+    Teardown();
     if (restart) { vTaskDelay(pdMS_TO_TICKS(100));esp_restart(); }
     vTaskDelete(nullptr);
 }
@@ -130,23 +160,30 @@ button.onclick=async()=>{button.disabled=true;try{const f=file.files[0];if(!f||f
     return httpd_resp_send(req,page,HTTPD_RESP_USE_STRLEN);
 }
 }
-esp_err_t StartExplicitWifiOta(std::uint16_t peer,SessionCredentials& output) {
+esp_err_t StartExplicitWifiOta(std::uint16_t peer,SessionCredentials& output,std::uint32_t connection_epoch) {
     // An unsigned running seed or disabled native policy fails closed
     // before motion gating, RNG credentials, Wi-Fi init or network listeners.
+    if (connection_epoch!=BleOtaConnectionEpoch()) return ESP_ERR_INVALID_STATE;
     if (!OfficialSignaturePolicyReady()) return ESP_ERR_NOT_SUPPORTED;
     bool expected=false;
     if (!active.compare_exchange_strong(expected,true)) return ESP_ERR_INVALID_STATE;
     cancelled=false;restart_requested=false;started_ms=Now();
-    if (!BeginBleOtaMaintenance(peer)) { active=false;return ESP_ERR_INVALID_STATE; }
+    portENTER_CRITICAL(&status_lock);
+    window_status.window_id=esp_random();if (!window_status.window_id) window_status.window_id=1;
+    portEXIT_CRITICAL(&status_lock);
+    Status(WindowState::Opening);
+    if (!BeginBleOtaMaintenance(peer)) { active=false;Status(WindowState::Failed,WindowResult::NotReady);return ESP_ERR_INVALID_STATE; }
     const auto stop_begin=Now();
     while (!BleOtaMaintenanceStopped()&&static_cast<std::uint32_t>(Now()-stop_begin)<1000)
         vTaskDelay(pdMS_TO_TICKS(10));
-    if (!BleOtaMaintenanceStopped()||!BleOtaPeerStillAuthorized(peer)) { active=false;return ESP_ERR_INVALID_STATE; }
+    if (!BleOtaMaintenanceStopped()||connection_epoch!=BleOtaConnectionEpoch()||!BleOtaPeerStillAuthorized(peer)) { Teardown();return ESP_ERR_INVALID_STATE; }
     std::array<std::uint8_t,16> random{};
     esp_fill_random(random.data(),random.size());const auto password=LowerHex(random.data(),random.size());
     esp_fill_random(random.data(),random.size());const auto bearer=LowerHex(random.data(),random.size());
+    portENTER_CRITICAL(&status_lock);
     std::snprintf(credentials.ssid,sizeof(credentials.ssid),"SatoriEye-OTA-%.8s",bearer.c_str());
     std::memcpy(credentials.password,password.c_str(),password.size()+1);
+    portEXIT_CRITICAL(&status_lock);
     auto rc=esp_netif_init();
     if (rc!=ESP_OK) { Teardown();return rc; }
     rc=esp_event_loop_create_default();
@@ -173,18 +210,77 @@ esp_err_t StartExplicitWifiOta(std::uint16_t peer,SessionCredentials& output) {
     const httpd_uri_t page{.uri="/",.method=HTTP_GET,.handler=Page,.user_ctx=nullptr};
     if ((rc=httpd_register_uri_handler(server,&page))!=ESP_OK) { Teardown();return rc; }
     if (xTaskCreate(Supervisor,"ota_lifetime",4096,nullptr,5,nullptr)!=pdPASS) { Teardown();return ESP_ERR_NO_MEM; }
-    output=credentials;return ESP_OK;
+    output=credentials;Status(WindowState::Open);return ESP_OK;
+}
+namespace {
+void CommandWorker(void*) {
+    CommandWork work{};
+    for (;;) {
+        if (xQueueReceive(commands,&work,portMAX_DELAY)!=pdTRUE) continue;
+        if (work.connection_epoch!=BleOtaConnectionEpoch()||!BleOtaPeerStillAuthorized(work.peer)) continue;
+        // Close cannot report cancellation once a finalized image was selected.
+        xSemaphoreTake(commit_lock,portMAX_DELAY);
+        const auto before=Snapshot();
+        const auto admission=protocol.Admit(work.command,before.state,before.window_id,OfficialSignaturePolicyReady());
+        portENTER_CRITICAL(&status_lock);
+        window_status.ack_request_id=work.command.request_id;window_status.result=admission.result;
+        portEXIT_CRITICAL(&status_lock);
+        if (!admission.execute) { xSemaphoreGive(commit_lock);continue; }
+        if (work.command.action==2) {
+            if (!active) { EndBleOtaMaintenance();Status(WindowState::Closed);xSemaphoreGive(commit_lock);continue; }
+            cancelled=true;Status(WindowState::Closing);xSemaphoreGive(commit_lock);
+            while (active) vTaskDelay(pdMS_TO_TICKS(10));
+            // Teardown publishes Closed only after AP and control-session cleanup.
+            continue;
+        }
+        xSemaphoreGive(commit_lock);
+        SessionCredentials ignored{};
+        const auto rc=StartExplicitWifiOta(work.peer,ignored,work.connection_epoch);
+        mbedtls_platform_zeroize(&ignored,sizeof(ignored));
+        if (rc!=ESP_OK) {
+            Status(WindowState::Failed,rc==ESP_ERR_NOT_SUPPORTED?WindowResult::Unsupported:WindowResult::Internal);
+        }
+    }
+}
+}
+esp_err_t StartWifiOtaControlWorker() {
+    if (commands) return ESP_OK;
+    commit_lock=xSemaphoreCreateMutex();if (!commit_lock) return ESP_ERR_NO_MEM;
+    commands=xQueueCreate(4,sizeof(CommandWork));
+    if (!commands) { vSemaphoreDelete(commit_lock);commit_lock=nullptr;return ESP_ERR_NO_MEM; }
+    if (xTaskCreate(CommandWorker,"ota_commands",6144,nullptr,5,nullptr)!=pdPASS) {
+        vQueueDelete(commands);commands=nullptr;vSemaphoreDelete(commit_lock);commit_lock=nullptr;return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+bool SubmitWifiOtaCommand(std::uint16_t peer,const WindowCommand& command) {
+    const CommandWork work{peer,command,BleOtaConnectionEpoch()};
+    return commands&&xQueueSend(commands,&work,0)==pdTRUE;
+}
+std::size_t ReadWifiOtaStatus(std::uint8_t* output,std::size_t capacity) {
+    if (!output) return 0;
+    WindowStatus status{};SessionCredentials copy{};
+    portENTER_CRITICAL(&status_lock);status=window_status;copy=credentials;portEXIT_CRITICAL(&status_lock);
+    if (active&&!cancelled&&!restart_requested) {
+        const auto elapsed=static_cast<std::uint32_t>(Now()-started_ms);
+        status.remaining_ms=elapsed<kSessionMs?kSessionMs-elapsed:0;
+    } else status.remaining_ms=0;
+    if (status.ack_request_id==0&&!OfficialSignaturePolicyReady()) status.result=WindowResult::Unsupported;
+    if (status.state!=WindowState::Open&&status.state!=WindowState::Uploading) copy={};
+    const auto bytes=EncodeWindowStatus(status,copy.ssid,copy.password);
+    mbedtls_platform_zeroize(&copy,sizeof(copy));
+    if (bytes.size()>capacity) return 0;
+    std::memcpy(output,bytes.data(),bytes.size());return bytes.size();
 }
 void CancelWifiOta() { cancelled=true; }
 bool WifiOtaSessionActive() { return active.load(); }
 } // namespace satori::ota
-// Link-only candidate anchor; no runtime caller/registration is installed.
-extern "C" esp_err_t satori_ota_prototype_link_anchor(std::uint16_t peer,satori::ota::SessionCredentials* output) {
-    return output?satori::ota::StartExplicitWifiOta(peer,*output):ESP_ERR_INVALID_ARG;
-}
 #else
 namespace satori::ota {
-esp_err_t StartExplicitWifiOta(std::uint16_t,SessionCredentials&) { return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t StartWifiOtaControlWorker() { return ESP_ERR_NOT_SUPPORTED; }
+bool SubmitWifiOtaCommand(std::uint16_t,const WindowCommand&) { return false; }
+std::size_t ReadWifiOtaStatus(std::uint8_t*,std::size_t) { return 0; }
+esp_err_t StartExplicitWifiOta(std::uint16_t,SessionCredentials&,std::uint32_t) { return ESP_ERR_NOT_SUPPORTED; }
 void CancelWifiOta() {}
 bool WifiOtaSessionActive() { return false; }
 }

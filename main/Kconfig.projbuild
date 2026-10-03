@@ -72,14 +72,14 @@ endmenu
 
 menu "Satori Wi-Fi OTA local prototype"
     config SATORI_WIFI_OTA_PROTOTYPE
-        bool "Compile inert explicit-maintenance OTA prototype"
+        bool "Compile explicit BLE-controlled Wi-Fi OTA"
         depends on SATORI_TRANSPORT_BLE_PRIMARY && SATORI_DUAL_OTA_BOOT_CONFIRM
         default n
         help
-            Local infrastructure build only. No caller opens Wi-Fi at boot or via
-            existing BLE/USB controls. The isolated prototype profile enables native
-            signed-image verification, but contains no signing key or installed
-            signed seed. Other profiles fail closed before networking.
+            The isolated profile exposes an optional authenticated BLE maintenance
+            characteristic. Networking opens only after an explicit request and
+            running signed-seed verification. No signing key is bundled. Other
+            profiles do not expose the extension or start networking.
 endmenu
 
 menu "example Wifi Configuration"

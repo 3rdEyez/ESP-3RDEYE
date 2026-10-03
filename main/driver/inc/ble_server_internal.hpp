@@ -48,7 +48,8 @@ struct Runtime {
     std::atomic<bool> boot_control_allowed{true};
     std::atomic<bool> host_startup_ready{false};
     std::atomic<bool> ota_maintenance_requested{false};
-    std::atomic<bool> ota_maintenance_stopped{false};
+    std::atomic<std::uint32_t> ota_maintenance_epoch{0};
+    std::atomic<std::uint32_t> ota_stopped_epoch{0};
     std::atomic<std::uint32_t> control_cycles{0};
     std::atomic<bool> pairing_store_ready{false};
     std::atomic<std::uint8_t> bond_count{0};
@@ -57,6 +58,7 @@ struct Runtime {
     ble_store_write_fn* store_write_delegate{nullptr};
     std::uint8_t address_type{0}; // NimBLE host task only.
     std::atomic<std::uint16_t> connection{kNoConnection};
+    std::atomic<unsigned> connection_epoch{1};
     std::uint16_t tx_handle{kNoHandle}; // Set before host/task startup.
     std::uint16_t state_handle{kNoHandle};
     std::atomic<std::uint32_t> connected_at_ms{0};

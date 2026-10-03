@@ -1,92 +1,91 @@
-# Local Wi-Fi OTA prototype (ESP-IDF 5.5.4, ESP32-C3)
+# Explicit BLE-controlled Wi-Fi OTA (local candidate)
 
-This branch is an offline implementation candidate, not deployed firmware. The
-installed device remains the separately verified dual-slot 0.2.4 migration.
-The 0.2.5 candidate is unsigned and must not be flashed as built.
+The local 0.2.5 implementation now includes the product entry: authenticated BLE
+open/close requests, real status/ACK reads, App instructions and a paused exit to
+a fresh control session. It has not been deployed. Installed dual-slot firmware
+remains 0.2.4. The built candidate is unsigned and must not be flashed as built.
 
-## Implemented
+## Protocol and product flow
 
-- Pure C++ transfer state machine and an adapter using official `esp_ota_*`
-  APIs. Only the inactive, exact 0x170000-byte OTA slot can be written. Running
-  firmware must already be VALID. Exact length, streaming and stored-Flash SHA,
-  actual image board tag, chip, project, version and native RSA signature checks
-  precede boot-target selection. Cancellation/timeout guards prevent commit.
-- Native signed-app verification without hardware Secure Boot. The isolated
-  profile enables RSA3072 verification and disables automatic signing, flash
-  encryption and eFuse anti-rollback. Trust comes from the first signature block
-  of the running signed app. No key, root, eFuse or private-key path is installed.
-- Explicit maintenance API: a paired BLE peer requests stopping the control
-  task and discarding the session/queue. A temporary RAM-only WPA2 SoftAP and
-  browser upload page accept a signed `.sota` package from any joined device.
-  The uploader does not need BLE pairing or an ongoing BLE connection.
-- Window default: 120 seconds, implementation setting rather than a permanent
-  user preference. A successful explicit install selects the image and restarts;
-  timeout, cancellation or error closes networking and does not restore motion.
-- Offline package inspection/container generation and rollback state simulation.
-  SHA and signature-block shape do not establish authenticity. Unsigned package
-  output is rejected. Production signature verification remains the SDK's job.
+Standard Control v1.2, capabilities and all existing UUIDs are unchanged. An
+optional encrypted/authenticated read+write characteristic
+`4d89f6a0-73b9-4f14-9d3e-63b2145a0007` negotiates the maintenance extension by
+presence and status schema 1. Old firmware lacks it and remains controllable;
+an unsigned seed exposes signing-not-ready without starting networking.
 
-## Deliberately incomplete integration
+Request: exactly 10 bytes, schema 1 at byte 0, action open=1/close=2 at byte 1,
+nonzero little-endian request ID at bytes 2..5, window ID at 6..9 (zero for open,
+matching nonzero current ID for close). Recent eight requests are cached for
+idempotent retries; retries do not restart or extend a window. Same request ID
+with changed payload is rejected. This is a bounded retry cache, not permanent
+history or an authorization credential.
 
-No existing GATT/USB/startup caller invokes the maintenance API. There is no App
-button, credentials/status bridge or exit-to-fresh-control-session flow yet.
-The link anchor retains the complete service for realistic build size; it never
-executes it. App additions are package parsing/preflight and design notes only.
-Thus this branch cannot currently open an upgrade window through the product.
-The first signed seed and real Wi-Fi/heap/coexistence validation remain necessary.
+Status: 18-byte header followed by printable ASCII SSID/password. Schema=1 at 0;
+state Closed0/Opening1/Open2/Uploading3/Closing4/Committed5/Failed6 at 1;
+result Ok0/Busy1/Unsupported2/Invalid3/NotReady4/StaleWindow5/Internal6 at 2;
+reserved zero at 3; ACK request ID at 4..7; current/last window ID at 8..11;
+remaining milliseconds at 12..15; SSID/password lengths at 16/17 (max 32/64).
+A GATT write completion is never an open/close ACK. Poll the status and match the
+request ID and terminal state. Closed retains its window ID for reconciliation.
+Committed means image selected and reboot validation pending, not upgrade success.
 
-Build: activate the existing IDF 5.5.4 toolchain, then
-`python tools/build_firmware.py ble_wifi_ota_prototype`. The result explicitly
-says “App built but not signed”. Never use its generated generic flash command:
-it includes bootloader, partition table and initial otadata, beyond an app update.
-Both dual-slot profile defaults are tracked here; the earlier migration commit
-omitted its ignored defaults file, which this commit repairs for reproducibility.
+Only the existing authenticated BLE peer requests opening/closing. Opening
+invalidates the control lease/queue and waits for the sole motion task's
+maintenance-epoch stop ACK. Once opened, any device joined to the temporary
+WPA2 AP may upload from `http://192.168.4.1/`; no upload-side BLE pairing or
+ongoing BLE connection is required. BLE loss does not cancel the AP/upload.
+Window default is 120 seconds, an implementation setting rather than a permanent
+user preference. Password/SSID are RAM-only and not logged or persisted.
 
-## Offline validation
+App explicitly pauses/HALTs before entering, reads real device ACK/status and
+shows manual Wi-Fi/browser instructions. Missing extension, signing-not-ready,
+unknown/disconnected state and committed state have separate handling. Local
+deadline expiry is not proof of closure. Closing/timeout clears networking and
+creates no movement; explicit App exit establishes a fresh CLAIM with auto-start
+false. The user must explicitly enable control. Reconnection reads the actual
+firmware version and does not infer update success from upload or disconnect.
 
-Nine firmware host-test scripts and twelve Python tests pass. The actual sink is
-compiled against SDK mocks with native policy disabled/enabled; cases cover wrong
-slot, unsigned policy, corrupted Flash, signature rejection, wrong board/version,
-truncation and cancellation before/within verification and before selection.
-Mocks do not prove cryptographic verification, real Flash behavior or radio heap.
-Browser script passes Node syntax checking. The App has 122 passing tests,
-including eight new package/preflight tests; scoped Dart analysis is clean.
+## Image and native authenticity policy
 
-The linked unsigned image is 1,441,792 bytes. A native 4 KiB signature sector
-leaves 61,440 bytes in its OTA slot. The signed board tag is at image offset 288,
-verified against the actual output; this assumption is pinned to IDF 5.5.4.
+Only the inactive exact 0x170000-byte OTA slot is writable; running app must be
+VALID. Exact length, received/stored SHA, real signed image board tag, chip,
+project, version and official RSA signature validation precede selection. Close
+and final commit are serialized; a close after commit returns Busy. Timeout,
+cancellation or rejection never pretends that a committed image was undone.
 
-## Signed seed and rollback boundary
+Native IDF 5.5.4 RSA3072 signed-app verification without hardware Secure Boot is
+used. No formal key is generated, no private-key path is embedded, and automatic
+build signing, flash encryption, hardware Secure Boot and eFuse anti-rollback
+are disabled. Trust comes from the first signature block of the running signed
+app. First provision a signed USB seed; running unsigned 0.2.4 cannot establish
+this OTA trust. Only one signer is supported; replacement/loss needs a new USB
+signed seed. Software verification does not protect against physical Flash writes.
 
-The running unsigned 0.2.4 cannot supply the signer trust required by the OTA
-policy. First provision one signed app by an explicitly approved USB app-only
-write to currently inactive ota_0, preserving running ota_1 and all data/table/
-bootloader regions. Verify the signed artifact offline with the public key and
-perform complete readback before switching boot selection.
+Offline `.sota` tool checks structure/length/SHA and refuses unsigned output, but
+these are not cryptographic verification. Real device signature checking uses
+`esp_ota_end`. The board tag offset 288 is pinned to IDF 5.5.4 and checked in the
+actual build. Generic build-generated flash commands include more than an app
+update and must not be used for this existing migrated device.
 
-Only one signing key is supported by this prototype. Losing/replacing it needs
-an approved new USB signed seed. Software signature checking does not defend
-against physical Flash replacement. No home-grown PKI is used.
+## Validation and deployment boundary
 
-Do not assume the signed future app can call the SDK's explicit rollback API
-against unsigned 0.2.4: the API validates the fallback image under its current
-signature policy. Existing unsigned bootloader PENDING reset rollback and USB
-recovery are separate paths. A real fault rehearsal should use a signed VALID
-seed as fallback and a same-key signed fault candidate that never confirms boot
-or enables outputs. Its local plan is not an executed test.
+Firmware host tests cover control regressions, transfer lifecycle, real adapter
+against native SDK mocks, window codecs/admission/retry and epoch stop-ACK
+snapshots. App tests cover real status confirmation and maintenance exit. Mocks
+are not hardware scheduling, cryptography, BLE long-read, Flash or radio tests.
+See the task report and validation logs for exact counts and artifact hashes.
 
-## Next implementation and device acceptance
+Four firmware profiles are separately built; only `ble_wifi_ota_prototype`
+exposes the maintenance extension. Activate existing IDF 5.5.4, then run
+`python tools/build_firmware.py ble_wifi_ota_prototype`. It explicitly reports
+unsigned output. Both dual-slot profile defaults are version-controlled.
 
-1. Wire one explicit BLE window request and encrypted credential/status response,
-   then a minimal App action opening manual Wi-Fi/browser instructions. Retain
-   single-phone normal control, no automatic retry and fresh-session-only exit.
-2. Approve key generation, storage/independent backup, signed USB seed and exact
-   app/otadata writes. Reinspect current slot and make fresh double backups.
-3. Approve a real temporary AP test: same-key valid update succeeds; unsigned,
-   wrong-key, wrong-board, downgrade, truncation and timeout never select boot.
-   Check heap and BLE/Wi-Fi coexistence on hardware.
-4. Separately approve a no-output signed fault boot/reset/rollback rehearsal.
-   Do not combine first signed provisioning with intentional startup failure.
+Remaining steps are authorized physical deployment: generate/independently back
+up one signing key, sign and verify a seed, fresh double backups and app-only USB
+write to the inactive slot, then real network/image-rejection testing. A signed
+future app's explicit rollback API may reject the unsigned 0.2.4 fallback;
+use a signed VALID seed for a separately approved no-output fault rehearsal.
+Current bootloader PENDING-reset rollback and USB recovery are different paths.
 
-Official policy reference:
+Official native policy:
 https://docs.espressif.com/projects/esp-idf/en/v5.5.4/esp32c3/security/secure-boot-v2.html#signed-app-verification-without-hardware-secure-boot
