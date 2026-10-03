@@ -1,4 +1,4 @@
-import contextlib,io,json,struct,sys,unittest
+import contextlib,io,json,struct,sys,unittest,socket,threading,time,http.client
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
 import ota_package,ota_upload
@@ -35,6 +35,18 @@ class Tests(unittest.TestCase):
  def test_package_preflight_no_connect(self):
   with self.assertRaises(ValueError):ota_upload.upload_once('192.168.1.80',b'bad','a'*32,connection_factory=Connection)
   self.assertEqual(Connection.instances,[])
+ def test_real_loopback_stalled_response_has_total_deadline(self):
+  listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen(1);port=listener.getsockname()[1];release=threading.Event();accepted=[]
+  def server():
+   peer,_=listener.accept();accepted.append(True)
+   try:peer.recv(4096);release.wait(2)
+   finally:peer.close()
+  thread=threading.Thread(target=server,daemon=True);thread.start();started=time.monotonic()
+  try:
+   with self.assertRaises((TimeoutError,OSError,http.client.HTTPException)):
+    ota_upload.upload_once('127.0.0.1',self.package(),'a'*32,timeout=.2,connection_factory=lambda host,unused,timeout:http.client.HTTPConnection(host,port,timeout=timeout))
+   self.assertLess(time.monotonic()-started,1);self.assertEqual(accepted,[True])
+  finally:release.set();listener.close();thread.join(timeout=1)
  def test_ap_explicit(self):
   r=ota_upload.upload_once('192.168.4.1',self.package(),'',True,connection_factory=Connection)
   self.assertTrue(r['submitted_for_restart']);self.assertNotIn('X-Satori-Window',Connection.instances[0].requests[0][1]['headers'])
