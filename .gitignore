@@ -114,6 +114,8 @@ sdkconfig*
 !sdkconfig.defaults
 !sdkconfig.ble_primary.defaults
 !sdkconfig.legacy_udp.defaults
+!sdkconfig.ble_dual_ota.defaults
+!sdkconfig.ble_wifi_ota_prototype.defaults
 
 *.bin
 *.exe

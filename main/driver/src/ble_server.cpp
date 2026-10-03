@@ -120,7 +120,7 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
             id = EncodeIdentity(ReadIdentity().id); return os_mbuf_append(ctxt->om, id.data(), id.size()) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
         if (ble_uuid_cmp(uuid, &kInfoUuid.u) == 0) {
-            DeviceInfo info; info.firmware_major = 0; info.firmware_minor = 2; info.firmware_patch = 4;
+            DeviceInfo info; info.firmware_major = 0; info.firmware_minor = 2; info.firmware_patch = 5;
             info.protocol_minor = 2;
             info.capabilities = 0x5f | kCapabilityPairingCodeManagement | kCapabilitySharedMultiBond;
             info.security_policy = 2;
@@ -397,6 +397,31 @@ void OnHostReset(int reason) {
 
 void StartBleMaintenanceConsole() { satori::ble::internal::StartUsbTools(); }
 void SetBleBootControlAllowed(bool allowed) { satori::ble::internal::g_runtime.boot_control_allowed = allowed; }
+bool BleOtaPeerStillAuthorized(unsigned short peer) {
+    using namespace satori::ble::internal;
+    ble_gap_conn_desc desc{};
+    return peer==g_runtime.connection.load(std::memory_order_acquire)&&
+        ble_gap_conn_find(peer,&desc)==0&&AuthorizedSecurePeer(desc);
+}
+bool BeginBleOtaMaintenance(unsigned short peer) {
+#if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
+    using namespace satori::ble::internal;
+    if (!g_runtime.boot_control_allowed||!BleStartupHealthy()||!BleOtaPeerStillAuthorized(peer)) return false;
+    bool expected=false;
+    if (!g_runtime.ota_maintenance_requested.compare_exchange_strong(expected,true)) return false;
+    g_runtime.boot_control_allowed=false;
+    portENTER_CRITICAL(&g_runtime.session_lock);
+    g_runtime.session.Disconnect();
+    portEXIT_CRITICAL(&g_runtime.session_lock);
+    if (g_runtime.work_queue) xQueueReset(g_runtime.work_queue);
+    return true;
+#else
+    (void)peer;return false;
+#endif
+}
+bool BleOtaMaintenanceStopped() {
+    return satori::ble::internal::g_runtime.ota_maintenance_stopped.load(std::memory_order_acquire);
+}
 unsigned BleControlCycleCount() { return satori::ble::internal::g_runtime.control_cycles.load(std::memory_order_relaxed); }
 bool BleStartupHealthy() {
     const auto& runtime = satori::ble::internal::g_runtime;

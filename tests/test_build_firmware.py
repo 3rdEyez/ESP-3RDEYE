@@ -25,7 +25,8 @@ class BuildFirmwareEntryTest(unittest.TestCase):
         self.root = self.root.resolve()
         shutil.copyfile(SOURCE, self.root / "tools" / "build_firmware.py")
         for name in ("sdkconfig.defaults", "sdkconfig.ble_primary.defaults",
-                     "sdkconfig.legacy_udp.defaults", "sdkconfig.ble_dual_ota.defaults"):
+                     "sdkconfig.legacy_udp.defaults", "sdkconfig.ble_dual_ota.defaults",
+                     "sdkconfig.ble_wifi_ota_prototype.defaults"):
             (self.root / name).write_text("", encoding="utf-8")
         (self.root / "sdkconfig").write_text("existing private config", encoding="utf-8")
 
@@ -54,7 +55,7 @@ class BuildFirmwareEntryTest(unittest.TestCase):
         )
 
     def test_default_and_legacy_profiles_keep_config_separate(self) -> None:
-        for profile, args in (("ble_primary", ()), ("legacy_udp", ("legacy_udp",)), ("ble_dual_ota", ("ble_dual_ota",))):
+        for profile, args in (("ble_primary", ()), ("legacy_udp", ("legacy_udp",)), ("ble_dual_ota", ("ble_dual_ota",)), ("ble_wifi_ota_prototype", ("ble_wifi_ota_prototype",))):
             with self.subTest(profile=profile):
                 result = self.invoke(*args)
                 self.assertEqual(result.returncode, 0, result.stderr)

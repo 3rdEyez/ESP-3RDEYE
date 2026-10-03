@@ -70,6 +70,18 @@ menu "example PINS Configuration"
         
 endmenu
 
+menu "Satori Wi-Fi OTA local prototype"
+    config SATORI_WIFI_OTA_PROTOTYPE
+        bool "Compile inert explicit-maintenance OTA prototype"
+        depends on SATORI_TRANSPORT_BLE_PRIMARY && SATORI_DUAL_OTA_BOOT_CONFIRM
+        default n
+        help
+            Local infrastructure build only. No caller opens Wi-Fi at boot or via
+            existing BLE/USB controls. The isolated prototype profile enables native
+            signed-image verification, but contains no signing key or installed
+            signed seed. Other profiles fail closed before networking.
+endmenu
+
 menu "example Wifi Configuration"
 
     config ESP_WIFI_SSID

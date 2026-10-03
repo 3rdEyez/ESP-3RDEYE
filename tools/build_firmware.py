@@ -10,7 +10,7 @@ import sys
 
 
 EXPECTED_IDF_VERSION = "ESP-IDF v5.5.4"
-PROFILES = ("ble_primary", "legacy_udp", "ble_dual_ota")
+PROFILES = ("ble_primary", "legacy_udp", "ble_dual_ota", "ble_wifi_ota_prototype")
 
 
 def idf_command() -> list[str]:
