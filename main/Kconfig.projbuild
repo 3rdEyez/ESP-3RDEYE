@@ -168,3 +168,10 @@ menu "SatoriEye transport"
             bool "Legacy Wi-Fi UDP compatibility"
     endchoice
 endmenu
+
+menu "Satori OTA boot validation"
+    config SATORI_DUAL_OTA_BOOT_CONFIRM
+        bool "Validate dual OTA startup before allowing output"
+        depends on SATORI_TRANSPORT_BLE_PRIMARY && BOOTLOADER_APP_ROLLBACK_ENABLE
+        default n
+endmenu

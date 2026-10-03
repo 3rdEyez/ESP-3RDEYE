@@ -45,6 +45,9 @@ struct Runtime {
     std::atomic<bool> secure_peer{false};
     std::atomic<bool> identity_corrupt{false};
     std::atomic<bool> ble_started{false};
+    std::atomic<bool> boot_control_allowed{true};
+    std::atomic<bool> host_startup_ready{false};
+    std::atomic<std::uint32_t> control_cycles{0};
     std::atomic<bool> pairing_store_ready{false};
     std::atomic<std::uint8_t> bond_count{0};
     std::atomic<bool> output_fault{false};

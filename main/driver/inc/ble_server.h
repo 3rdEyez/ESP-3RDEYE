@@ -2,3 +2,7 @@
 #include "esp_err.h"
 esp_err_t StartBlePrimary();
 void StartBleMaintenanceConsole();
+
+void SetBleBootControlAllowed(bool allowed);
+bool BleStartupHealthy();
+unsigned BleControlCycleCount();

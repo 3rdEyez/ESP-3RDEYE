@@ -120,7 +120,7 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
             id = EncodeIdentity(ReadIdentity().id); return os_mbuf_append(ctxt->om, id.data(), id.size()) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
         if (ble_uuid_cmp(uuid, &kInfoUuid.u) == 0) {
-            DeviceInfo info; info.firmware_major = 0; info.firmware_minor = 2; info.firmware_patch = 3;
+            DeviceInfo info; info.firmware_major = 0; info.firmware_minor = 2; info.firmware_patch = 4;
             info.protocol_minor = 2;
             info.capabilities = 0x5f | kCapabilityPairingCodeManagement | kCapabilitySharedMultiBond;
             info.security_policy = 2;
@@ -140,6 +140,8 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
     if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR && ble_uuid_cmp(uuid, &kRxUuid.u) == 0) {
         ble_gap_conn_desc desc{};
         if (ble_gap_conn_find(conn_handle, &desc) != 0 || !AuthorizedSecurePeer(desc)) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+        // No control or persistent-management commands before startup confirms.
+        if (!g_runtime.boot_control_allowed) return BLE_ATT_ERR_UNLIKELY;
         if (g_runtime.output_fault.load(std::memory_order_acquire)) return BLE_ATT_ERR_UNLIKELY;
         const std::uint16_t packet_size = OS_MBUF_PKTLEN(ctxt->om);
         if (packet_size != kFrameSize) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
@@ -150,7 +152,7 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
         const auto now = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
         portENTER_CRITICAL(&g_runtime.session_lock);
         outcome = g_runtime.session.Handle(raw.data(), raw.size(), now,
-                                   g_runtime.startup_configured, g_runtime.startup_target, token ? token : 1);
+                                   g_runtime.startup_configured && g_runtime.boot_control_allowed, g_runtime.startup_target, token ? token : 1);
         portEXIT_CRITICAL(&g_runtime.session_lock);
         if (outcome.result == Result::BadLength) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
         if (outcome.result == Result::NotAuthorized) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
@@ -305,9 +307,11 @@ void StartAdvertising() {
     static const char name[] = "SatoriEye";
     fields.name = reinterpret_cast<const std::uint8_t*>(name); fields.name_len = sizeof(name) - 1; fields.name_is_complete = 1;
     fields.uuids128 = const_cast<ble_uuid128_t*>(&kServiceUuid); fields.num_uuids128 = 1; fields.uuids128_is_complete = 1;
-    ble_gap_adv_set_fields(&fields);
+    const int fields_rc = ble_gap_adv_set_fields(&fields);
+    if (fields_rc != 0) { g_runtime.host_startup_ready = false; ESP_LOGW(kTag, "BLE advertising fields failed (%d)", fields_rc); return; }
     g_runtime.adv_params = {}; g_runtime.adv_params.conn_mode = BLE_GAP_CONN_MODE_UND; g_runtime.adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
     const int rc = ble_gap_adv_start(g_runtime.address_type, nullptr, BLE_HS_FOREVER, &g_runtime.adv_params, GapEvent, nullptr);
+    g_runtime.host_startup_ready = rc == 0 || rc == BLE_HS_EALREADY;
     if (rc != 0 && rc != BLE_HS_EALREADY) ESP_LOGW(kTag, "BLE advertising restart failed (%d)", rc);
 }
 bool InitializePairingStore() {
@@ -319,12 +323,18 @@ bool InitializePairingStore() {
         return false;
     }
     if (!g_runtime.has_identity && !g_runtime.identity_corrupt && bond_count == 0) {
+#if CONFIG_SATORI_DUAL_OTA_BOOT_CONFIRM
+        // Migration must preserve an existing identity, never create credentials.
+        ESP_LOGE(kTag, "Existing identity missing; OTA validation will fail closed");
+        return false;
+#else
         BleIdentityData generated{};
         PairingLock();
         const auto provision = BleProvisionIdentity(generated);
         if (provision == ESP_OK) { g_runtime.identity = generated; g_runtime.has_identity = true; }
         PairingUnlock();
         if (provision != ESP_OK) { ESP_LOGE(kTag, "BLE auto-provision failed: %s", esp_err_to_name(provision)); g_runtime.identity_corrupt = true; }
+#endif
     }
     if (!g_runtime.has_identity || g_runtime.identity_corrupt) {
         ESP_LOGW(kTag, "BLE identity unavailable or malformed; advertising disabled pending USB recovery");
@@ -362,6 +372,7 @@ void OnSync() {
 }
 void HostTask(void*) { nimble_port_run(); nimble_port_freertos_deinit(); }
 void OnHostReset(int reason) {
+    g_runtime.host_startup_ready = false;
     RecordStop(StopReason::HostReset);
     ESP_LOGW(kTag, "BLE host reset (%d); invalidating live session", reason);
     g_runtime.connection = kNoConnection;
@@ -385,6 +396,15 @@ void OnHostReset(int reason) {
 }
 
 void StartBleMaintenanceConsole() { satori::ble::internal::StartUsbTools(); }
+void SetBleBootControlAllowed(bool allowed) { satori::ble::internal::g_runtime.boot_control_allowed = allowed; }
+unsigned BleControlCycleCount() { return satori::ble::internal::g_runtime.control_cycles.load(std::memory_order_relaxed); }
+bool BleStartupHealthy() {
+    const auto& runtime = satori::ble::internal::g_runtime;
+    return runtime.ble_started && runtime.host_startup_ready && runtime.pairing_store_ready &&
+           runtime.has_identity && runtime.startup_configured && !runtime.identity_corrupt &&
+           !runtime.output_fault && !runtime.pairing_storage_fault;
+}
+
 
 esp_err_t StartBlePrimary() {
     using namespace satori::ble::internal;

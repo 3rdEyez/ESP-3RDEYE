@@ -71,6 +71,7 @@ void ControlTask(void*) {
     };
 
     while (true) {
+        g_runtime.control_cycles.fetch_add(1, std::memory_order_relaxed);
         const auto now = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
         const auto connection = g_runtime.connection.load(std::memory_order_acquire);
         if (g_runtime.pairing_storage_fault.load(std::memory_order_acquire) && connection != kNoConnection) {
