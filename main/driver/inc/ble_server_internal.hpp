@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "ble_identity.h"
+#include "ble_diagnostics.hpp"
 #include "ble_motion.hpp"
 #include "ble_pairing.hpp"
 #include "ble_protocol.hpp"
@@ -32,6 +33,7 @@ struct WorkItem {
 // MotionEngine belongs only to ControlTask after task startup.
 struct Runtime {
     Session session{};
+    Diagnostics diagnostics{}; // Protected by session_lock; never persisted.
     MotionEngine motion{};
     PairingCore pairing{};
     QueueHandle_t work_queue{nullptr};
@@ -69,6 +71,10 @@ LinkSecurity SecurityFromDesc(const ble_gap_conn_desc& desc);
 bool AuthorizedSecurePeer(const ble_gap_conn_desc& desc);
 void Notify(const std::array<std::uint8_t, kFrameSize>& bytes);
 void NotifySnapshotEvent(std::uint32_t sequence = 0);
+Diagnostics ReadDiagnostics();
+void RecordStop(StopReason reason);
+void RecordFault(std::uint8_t fault, StopReason reason);
+void RecordDisconnect(std::uint16_t reason);
 bool IsStartupConfigurationValid(Target& startup);
 void ControlTask(void*);
 void StartUsbTools();

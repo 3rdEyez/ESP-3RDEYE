@@ -17,6 +17,7 @@ void ControlTask(void*) {
     bool servo_enabled = false;
     bool output_fault = false;
     const auto fail_output = [&]() {
+        RecordFault(PwmFault, StopReason::OutputFault);
         output_fault = true;
         g_runtime.output_fault = true;
         servo_enabled = false;
@@ -87,7 +88,9 @@ void ControlTask(void*) {
         }
         std::uint32_t generation;
         bool expired;
+        bool had_owner;
         portENTER_CRITICAL(&g_runtime.session_lock);
+        had_owner = g_runtime.session.snapshot().token != 0;
         expired = g_runtime.session.TickLease(now);
         generation = g_runtime.session.generation();
         portEXIT_CRITICAL(&g_runtime.session_lock);
@@ -97,6 +100,8 @@ void ControlTask(void*) {
             publish_motion(generation, state_now().last_applied_sequence);
         }
         if (expired && connection != kNoConnection) {
+            // RELEASE's ACK window also expires here; it is not a lease loss.
+            if (had_owner) RecordStop(StopReason::LeaseExpired);
             (void)ble_gap_terminate(connection, BLE_ERR_REM_USER_CONN_TERM);
         }
         if (connection != kNoConnection &&
@@ -186,6 +191,8 @@ void ControlTask(void*) {
             const bool completed = g_runtime.session.CompleteAction(op.generation, op.request.sequence, true, completed_at, reply);
             portEXIT_CRITICAL(&g_runtime.session_lock);
             if (completed) {
+                if (opcode == Opcode::Halt) RecordStop(StopReason::Halt);
+                if (opcode == Opcode::Release) RecordStop(StopReason::Release);
                 g_runtime.motion.SetLastSequence(op.request.sequence);
                 publish_motion(op.generation, op.request.sequence);
                 Notify(reply);

@@ -47,6 +47,7 @@ static const ble_uuid128_t kInfoUuid = BLE_UUID128_INIT(0x02,0x00,0x5a,0x14,0xb2
 static const ble_uuid128_t kRxUuid = BLE_UUID128_INIT(0x03,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
 static const ble_uuid128_t kTxUuid = BLE_UUID128_INIT(0x04,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
 static const ble_uuid128_t kStateUuid = BLE_UUID128_INIT(0x05,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
+static const ble_uuid128_t kDiagnosticsUuid = BLE_UUID128_INIT(0x06,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
 void StartAdvertising();
 
 PeerIdentity IdentityFromDesc(const ble_gap_conn_desc& desc) {
@@ -79,6 +80,7 @@ int GuardedStoreWrite(int object_type, const ble_store_value* value) {
     const int rc = g_runtime.store_write_delegate(object_type, value);
     if (rc != 0 && (object_type == BLE_STORE_OBJ_TYPE_OUR_SEC || object_type == BLE_STORE_OBJ_TYPE_PEER_SEC)) {
         g_runtime.pairing_storage_fault.store(true, std::memory_order_release);
+        RecordFault(BondStorageFault, StopReason::StorageFault);
         ESP_LOGE(kTag, "BLE bond persistence failed; pairing and control are disabled until reboot");
     }
     return rc;
@@ -87,7 +89,11 @@ void Notify(const std::array<std::uint8_t, kFrameSize>& bytes) {
     const auto connection = g_runtime.connection.load(std::memory_order_acquire);
     if (connection == kNoConnection || g_runtime.tx_handle == kNoHandle || !g_runtime.event_subscribed) return;
     struct os_mbuf* om = ble_hs_mbuf_from_flat(bytes.data(), bytes.size());
-    if (om) (void)ble_gatts_notify_custom(connection, g_runtime.tx_handle, om);
+    if (!om || ble_gatts_notify_custom(connection, g_runtime.tx_handle, om) != 0) {
+        portENTER_CRITICAL(&g_runtime.session_lock);
+        IncrementDiagnosticCounter(g_runtime.diagnostics.notification_failure_count);
+        portEXIT_CRITICAL(&g_runtime.session_lock);
+    }
 }
 void NotifySnapshotEvent(std::uint32_t sequence) {
     Snapshot snapshot;
@@ -114,7 +120,7 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
             id = EncodeIdentity(ReadIdentity().id); return os_mbuf_append(ctxt->om, id.data(), id.size()) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
         if (ble_uuid_cmp(uuid, &kInfoUuid.u) == 0) {
-            DeviceInfo info; info.firmware_major = 0; info.firmware_minor = 2; info.firmware_patch = 2;
+            DeviceInfo info; info.firmware_major = 0; info.firmware_minor = 2; info.firmware_patch = 3;
             info.protocol_minor = 2;
             info.capabilities = 0x5f | kCapabilityPairingCodeManagement | kCapabilitySharedMultiBond;
             info.security_policy = 2;
@@ -124,6 +130,10 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
             if (ble_gap_conn_find(conn_handle, &desc) != 0 || !AuthorizedSecurePeer(desc)) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
             Snapshot snapshot; portENTER_CRITICAL(&g_runtime.session_lock); snapshot = g_runtime.session.snapshot(); portEXIT_CRITICAL(&g_runtime.session_lock);
             bytes = EncodeSnapshot(snapshot); size = bytes.size();
+        } else if (ble_uuid_cmp(uuid, &kDiagnosticsUuid.u) == 0) {
+            ble_gap_conn_desc desc{};
+            if (ble_gap_conn_find(conn_handle, &desc) != 0 || !AuthorizedSecurePeer(desc)) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+            bytes = EncodeDiagnostics(ReadDiagnostics()); size = bytes.size();
         } else return BLE_ATT_ERR_READ_NOT_PERMITTED;
         return os_mbuf_append(ctxt->om, bytes.data(), size) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }
@@ -156,6 +166,7 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
                 queued = xQueueSend(g_runtime.work_queue, &item, 0);
             }
             if (queued != pdTRUE) {
+                RecordFault(WorkQueueFault, StopReason::QueueFault);
                 // The state machine has accepted this sequence, so enter fail-safe and do not acknowledge execution.
                 portENTER_CRITICAL(&g_runtime.session_lock); g_runtime.session.Disconnect(); portEXIT_CRITICAL(&g_runtime.session_lock);
                 g_runtime.secure_peer = false;
@@ -170,7 +181,7 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
     return ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR ? BLE_ATT_ERR_READ_NOT_PERMITTED : BLE_ATT_ERR_WRITE_NOT_PERMITTED;
 }
 
-static ble_gatt_chr_def kCharacteristics[6]{};
+static ble_gatt_chr_def kCharacteristics[7]{};
 static ble_gatt_svc_def kServices[2]{};
 void ConfigureGattTable() {
     kCharacteristics[0].uuid = &kIdentityUuid.u; kCharacteristics[0].access_cb = GattAccess; kCharacteristics[0].flags = BLE_GATT_CHR_F_READ;
@@ -184,6 +195,8 @@ void ConfigureGattTable() {
     kCharacteristics[4].uuid = &kStateUuid.u; kCharacteristics[4].access_cb = GattAccess;
     kCharacteristics[4].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC | BLE_GATT_CHR_F_READ_AUTHEN;
     kCharacteristics[4].val_handle = &g_runtime.state_handle;
+    kCharacteristics[5].uuid = &kDiagnosticsUuid.u; kCharacteristics[5].access_cb = GattAccess;
+    kCharacteristics[5].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC | BLE_GATT_CHR_F_READ_AUTHEN;
     kServices[0].type = BLE_GATT_SVC_TYPE_PRIMARY; kServices[0].uuid = &kServiceUuid.u; kServices[0].characteristics = kCharacteristics;
 }
 
@@ -201,6 +214,11 @@ int GapEvent(ble_gap_event* event, void*) {
         return 0;
     case BLE_GAP_EVENT_DISCONNECT:
         if (event->disconnect.conn.conn_handle == g_runtime.connection) {
+            portENTER_CRITICAL(&g_runtime.session_lock);
+            const bool had_owner = g_runtime.session.snapshot().token != 0;
+            portEXIT_CRITICAL(&g_runtime.session_lock);
+            if (had_owner) RecordStop(StopReason::LinkLost);
+            RecordDisconnect(static_cast<std::uint16_t>(event->disconnect.reason));
             g_runtime.connection = kNoConnection; g_runtime.event_subscribed = false; g_runtime.secure_peer = false;
             portENTER_CRITICAL(&g_runtime.session_lock); g_runtime.session.Disconnect(); const auto gen = g_runtime.session.generation(); portEXIT_CRITICAL(&g_runtime.session_lock);
             WorkItem stop{}; stop.disconnected = true;
@@ -344,6 +362,7 @@ void OnSync() {
 }
 void HostTask(void*) { nimble_port_run(); nimble_port_freertos_deinit(); }
 void OnHostReset(int reason) {
+    RecordStop(StopReason::HostReset);
     ESP_LOGW(kTag, "BLE host reset (%d); invalidating live session", reason);
     g_runtime.connection = kNoConnection;
     g_runtime.event_subscribed = false;
@@ -369,13 +388,20 @@ void StartBleMaintenanceConsole() { satori::ble::internal::StartUsbTools(); }
 
 esp_err_t StartBlePrimary() {
     using namespace satori::ble::internal;
+    g_runtime.diagnostics.reset_reason = static_cast<std::uint8_t>(esp_reset_reason()); // Before tasks start.
     g_runtime.has_identity = BleLoadIdentity(g_runtime.identity);
     g_runtime.identity_corrupt = !g_runtime.has_identity && BleIdentityHasAnyMaterial();
-    if (g_runtime.identity_corrupt)
+    if (g_runtime.identity_corrupt) {
+        RecordFault(satori::ble::IdentityFault, satori::ble::StopReason::StorageFault);
         ESP_LOGE(kTag, "Partial BLE identity record found; pairing is disabled until USB recovery.");
+    }
     if (g_runtime.work_queue == nullptr) g_runtime.work_queue = xQueueCreate(kPendingCommands, sizeof(WorkItem));
     if (!g_runtime.work_queue) return ESP_ERR_NO_MEM;
     g_runtime.startup_configured = IsStartupConfigurationValid(g_runtime.startup_target);
+    if (!g_runtime.startup_configured) {
+        g_runtime.diagnostics.faults |= satori::ble::StartupConfigurationFault; // Before tasks start.
+        ESP_LOGW(kTag, "Startup configuration invalid; ARM remains disabled");
+    }
     int result = nimble_port_init(); if (result != ESP_OK) return result;
     g_runtime.pairing_mutex = xSemaphoreCreateMutex();
     if (!g_runtime.pairing_mutex) { (void)nimble_port_deinit(); return ESP_ERR_NO_MEM; }

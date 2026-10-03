@@ -16,6 +16,7 @@
 #include "esp_flash.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_app_desc.h"
 #include "nvs_bootstrap.h"
 
 #include "connect_wifi.h"
@@ -66,6 +67,10 @@ void greeting(void)
 extern "C" void app_main(void)
 {
     greeting();
+    const auto* app = esp_app_get_description();
+    ESP_LOGI(TAG, "Boot reset_reason=%u, build=%s, elf_id=%02x%02x%02x%02x",
+             static_cast<unsigned>(esp_reset_reason()), app->version,
+             app->app_elf_sha256[0], app->app_elf_sha256[1], app->app_elf_sha256[2], app->app_elf_sha256[3]);
 #if CONFIG_SATORI_TRANSPORT_BLE_PRIMARY
     const esp_err_t nvs_result = InitializeSharedNvs();
     if (nvs_result != ESP_OK) {
