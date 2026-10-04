@@ -125,7 +125,7 @@ class WirelessTests(unittest.TestCase):
         blob,_=ota_package.encode_package(image('0.2.8'),'esp-idf-sbv2-rsa3072')
         value={'state':2,'result':0,'ack':7,'window':9,'remaining_ms':50000,'ip':'192.168.1.2','token':b'a'*32}
         session=SimpleNamespace(link=SimpleNamespace(read=lambda:value),rid=7,window=9);outcome={};calls=[]
-        def upload(*a,**kw):calls.append(1);raise TimeoutError()
+        def upload(*a,**kw):kw['on_post_start']();calls.append(1);raise TimeoutError()
         with self.assertRaises(TimeoutError):wireless.handoff(session,blob,lambda s:s,lambda _:'INSTALL',outcome,lambda host:None,upload)
         self.assertTrue(outcome['post_started']);self.assertEqual(calls,[1])
     def test_probe_closes_connection_before_confirmation(self):

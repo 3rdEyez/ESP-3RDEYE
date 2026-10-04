@@ -1,3 +1,7 @@
+# 产品布局前置条件
+
+默认构建为双槽 OTA；USB、网页与 CLI 无线更新均要求精确已迁移布局。旧 factory 必须先显式运行 `tools/migrate_layout.py`，未知布局拒绝。不得用 `idf.py flash` 顺便重分区；见 [工具说明](../tools/README.md)。无参数构建是未签名开发产物，不能直接无线安装。
+
 # LAN OTA (local 0.2.8 experience implementation)
 
 Normal control remains BLE. Networking starts only from an explicit, secure bonded

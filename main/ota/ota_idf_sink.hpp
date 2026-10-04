@@ -9,6 +9,7 @@ namespace satori::ota {
 // Native IDF policy, never a matching hash or client-supplied root. No policy
 // is enabled by the local prototype; initial signed USB baseline needs approval.
 bool OfficialSignaturePolicyReady();
+bool OfficialUpdateLayoutReady();
 class IdfOtaSink final : public Sink {
 public:
     explicit IdfOtaSink(const ImageManifest& manifest,bool (*continue_guard)()=nullptr);

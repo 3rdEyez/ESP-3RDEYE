@@ -10,13 +10,11 @@ def endpoint(value):
         raise ValueError('Use the device IPv4 displayed by the current maintenance window')
     return str(address)
 
-def upload_once(host,package,token,ap=False,timeout=30,connection_factory=http.client.HTTPConnection):
-    # Local checks before any connection. A SHA check does not authenticate RSA.
-    image,manifest=decode_package(package);host=endpoint(host)
-    if not ap and (len(token)!=32 or any(c not in '0123456789abcdef' for c in token)):
-        raise ValueError('LAN requires the current 32-character window authorization code')
-    if ap and token:raise ValueError('AP fallback does not use a LAN token')
-    conn=connection_factory(host,80,timeout=timeout);deadline=time.monotonic()+timeout;expired=threading.Event()
+class MigrationRequired(ValueError):
+    pass
+
+def probe_layout(host,timeout=5,connection_factory=http.client.HTTPConnection):
+    host=endpoint(host);conn=connection_factory(host,80,timeout=timeout);expired=threading.Event()
     def abort():
         expired.set()
         if conn.sock:
@@ -25,6 +23,35 @@ def upload_once(host,package,token,ap=False,timeout=30,connection_factory=http.c
         conn.close()
     timer=threading.Timer(timeout,abort);timer.daemon=True;timer.start()
     try:
+        conn.request('GET','/v1/ota/layout',headers={'Connection':'close'})
+        response=conn.getresponse();raw=response.read(4096)
+        try:value=json.loads(raw)
+        except (ValueError,UnicodeError):value=None
+        if expired.is_set():raise TimeoutError('Layout check deadline')
+        if response.status!=200 or not isinstance(value,dict) or value.get('layout')!='dual-ota' or value.get('update_allowed') is not True:
+            raise MigrationRequired('Dual OTA layout not confirmed; use USB layout checking and explicit tools/migrate_layout.py for supported factory; no automatic migration')
+        return True
+    finally:timer.cancel();conn.close()
+
+def upload_once(host,package,token,ap=False,timeout=30,connection_factory=http.client.HTTPConnection,on_post_start=None):
+    # Local checks before any connection. A SHA check does not authenticate RSA.
+    image,manifest=decode_package(package);host=endpoint(host)
+    if not ap and (len(token)!=32 or any(c not in '0123456789abcdef' for c in token)):
+        raise ValueError('LAN requires the current 32-character window authorization code')
+    if ap and token:raise ValueError('AP fallback does not use a LAN token')
+    deadline=time.monotonic()+timeout
+    probe_layout(host,min(5,timeout),connection_factory)
+    remaining=deadline-time.monotonic()
+    if remaining<=0:raise TimeoutError('Upload deadline before POST')
+    conn=connection_factory(host,80,timeout=remaining);expired=threading.Event()
+    def abort():
+        expired.set()
+        if conn.sock:
+            try:conn.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:pass
+        conn.close()
+    timer=threading.Timer(remaining,abort);timer.daemon=True;timer.start()
+    try:
         conn.connect()
         if expired.is_set():raise TimeoutError('Upload deadline')
         conn.sock.settimeout(max(.001,deadline-time.monotonic()))
@@ -32,6 +59,7 @@ def upload_once(host,package,token,ap=False,timeout=30,connection_factory=http.c
                  'X-Satori-Manifest':json.dumps(manifest,separators=(',',':')),'X-Satori-Install':'confirm-restart'}
         if not ap:headers['X-Satori-Window']=token
         # Exactly one request; no redirects, retries, automatic close or BLE action.
+        if on_post_start:on_post_start()
         conn.request('POST','/v1/ota/image',body=image,headers=headers)
         if expired.is_set():raise TimeoutError('Upload deadline')
         conn.sock.settimeout(max(.001,deadline-time.monotonic()))
@@ -39,7 +67,7 @@ def upload_once(host,package,token,ap=False,timeout=30,connection_factory=http.c
         response.read(4096) # bounded, never display possibly reflected data
         if expired.is_set():raise TimeoutError('Upload deadline')
         return {'http_status':status,'submitted_for_restart':status==200,'upgrade_verified':False,
-                'version':manifest['version'],'request_count':1}
+                'version':manifest['version'],'request_count':1,'layout_verified':True}
     finally:
         timer.cancel();conn.close()
 
@@ -67,7 +95,7 @@ def main():
         else:print('Device rejected upload. Do not automatically resend.')
         return 0 if result['submitted_for_restart'] else 2
     except Exception as exc:
-        print(json.dumps({'upload_result':'unknown_or_failed','error_type':type(exc).__name__,'automatic_retry':False}))
+        print(json.dumps({'upload_result':'unknown_or_failed','error_type':type(exc).__name__,'automatic_retry':False,**({'guidance':str(exc)} if isinstance(exc,MigrationRequired) else {})}))
         return 2
     finally:token=''
 if __name__=='__main__':raise SystemExit(main())

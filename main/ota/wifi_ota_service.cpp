@@ -120,6 +120,7 @@ bool AuthorizedUpload(httpd_req_t* req) {
     mbedtls_platform_zeroize(received,sizeof(received));mbedtls_platform_zeroize(expected.data(),expected.size());return ok;
 }
 esp_err_t UploadBody(httpd_req_t* req) {
+    if (!OfficialUpdateLayoutReady()) return httpd_resp_send_err(req,HTTPD_400_BAD_REQUEST,"Dual OTA layout required; run explicit USB tools/migrate_layout.py; unknown layouts are unsupported");
     if (!Alive()||!AuthorizedUpload(req)) return httpd_resp_send_err(req,HTTPD_403_FORBIDDEN,"Session not authorized");
     ImageManifest manifest;
     if (!ReadManifest(req,manifest)||req->content_len!=manifest.image_size||
@@ -192,12 +193,21 @@ void Supervisor(void*) {
     if (restart) { vTaskDelay(pdMS_TO_TICKS(100));esp_restart(); }
     vTaskDelete(nullptr);
 }
+esp_err_t Layout(httpd_req_t* req) {
+    httpd_resp_set_hdr(req,"Connection","close");
+    httpd_resp_set_hdr(req,"Cache-Control","no-store");
+    httpd_resp_set_type(req,"application/json");
+    if (!Alive()) return CloseHttpResponse(httpd_resp_send_err(req,HTTPD_403_FORBIDDEN,"Maintenance window closed"));
+    const char* body=OfficialUpdateLayoutReady()?"{\"layout\":\"dual-ota\",\"update_allowed\":true}":"{\"layout\":\"unsupported\",\"update_allowed\":false}";
+    return CloseHttpResponse(httpd_resp_send(req,body,HTTPD_RESP_USE_STRLEN));
+}
 esp_err_t Page(httpd_req_t* req) {
     httpd_resp_set_hdr(req,"Connection","close");
     if (!Alive()) return CloseHttpResponse(httpd_resp_send_err(req,HTTPD_403_FORBIDDEN,"Maintenance window closed"));
     constexpr const char page[]=R"HTML(<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>觉瞳固件升级</title><style>body{font:18px sans-serif;max-width:40rem;margin:3rem auto;padding:1rem}button,input{font:inherit;margin:1rem 0}#status{white-space:pre-wrap}</style><h1>觉瞳固件升级</h1><p>维护窗口空闲十分钟后关闭；上传单独限时两分钟。升级期间运动已停止。电脑可直接上传签名包；LAN 模式需当前窗口授权码，AP 为显式备用。镜像仍须通过设备的验签与型号检查。</p><label>LAN 窗口授权码（仅本次使用；AP 模式留空）<input id="token" type="password" autocomplete="off"></label><br><input id="file" type="file" accept=".sota"><br><button id="install">安装并重启</button><p id="status" role="status"></p><script>
+const layoutMessage='设备须先完成双槽迁移；未知布局或旧固件无法确认时，请使用 USB 工具检查，禁止自动迁移。';
 const file=document.getElementById('file'),button=document.getElementById('install'),status=document.getElementById('status');
-button.onclick=async()=>{button.disabled=true;try{const f=file.files[0];if(!f||f.size>1507328+1028)throw Error('请选择正确大小的 .sota 包');const h=new DataView(await f.slice(0,4).arrayBuffer());const n=h.getUint32(0,true);if(n<1||n>1024||f.size<=4+n)throw Error('包头错误');const m=JSON.parse(await f.slice(4,4+n).text());const image=f.slice(4+n);if(image.size!==m.image_length)throw Error('镜像长度不匹配');if(!confirm('安装 '+m.version+' 并重启？运动不会自动恢复。'))return;status.textContent='正在上传，请勿断电。';const r=await fetch('/v1/ota/image',{method:'POST',headers:{'X-Satori-Manifest':JSON.stringify(m),'X-Satori-Install':'confirm-restart','X-Satori-Window':document.getElementById('token').value},body:image});status.textContent=await r.text();if(!r.ok)throw Error('设备拒绝升级；请查看结果，不要自动重试。');}catch(e){status.textContent=String(e);}finally{button.disabled=false;}};
+button.onclick=async()=>{button.disabled=true;try{const check=await fetch('/v1/ota/layout',{cache:'no-store'});let layout;try{layout=await check.json();}catch(e){throw Error(layoutMessage);}if(!check.ok||layout.layout!=='dual-ota'||layout.update_allowed!==true)throw Error(layoutMessage);const f=file.files[0];if(!f||f.size>1507328+1028)throw Error('请选择正确大小的 .sota 包');const h=new DataView(await f.slice(0,4).arrayBuffer());const n=h.getUint32(0,true);if(n<1||n>1024||f.size<=4+n)throw Error('包头错误');const m=JSON.parse(await f.slice(4,4+n).text());const image=f.slice(4+n);if(image.size!==m.image_length)throw Error('镜像长度不匹配');if(!confirm('安装 '+m.version+' 并重启？运动不会自动恢复。'))return;status.textContent='正在上传，请勿断电。';const r=await fetch('/v1/ota/image',{method:'POST',headers:{'X-Satori-Manifest':JSON.stringify(m),'X-Satori-Install':'confirm-restart','X-Satori-Window':document.getElementById('token').value},body:image});status.textContent=await r.text();if(!r.ok)throw Error('设备拒绝升级；请查看结果，不要自动重试。');}catch(e){status.textContent=String(e);}finally{button.disabled=false;}};
 </script></html>)HTML";
     httpd_resp_set_type(req,"text/html; charset=utf-8");
     httpd_resp_set_hdr(req,"Cache-Control","no-store");
@@ -208,7 +218,7 @@ esp_err_t StartNetworkOta(std::uint16_t peer,SessionCredentials& output,std::uin
     // An unsigned running seed or disabled native policy fails closed
     // before motion gating, RNG credentials, Wi-Fi init or network listeners.
     if (connection_epoch!=BleOtaConnectionEpoch()) return ESP_ERR_INVALID_STATE;
-    if (!OfficialSignaturePolicyReady()) return ESP_ERR_NOT_SUPPORTED;
+    if (!OfficialUpdateLayoutReady()||!OfficialSignaturePolicyReady()) return ESP_ERR_NOT_SUPPORTED;
     bool expected=false;
     if (!active.compare_exchange_strong(expected,true)) return ESP_ERR_INVALID_STATE;
     lan_mode=lan!=nullptr;cancelled=false;restart_requested=false;uploading=false;started_ms=Now();maintenance_peer=peer;maintenance_connection_epoch=connection_epoch;
@@ -271,12 +281,14 @@ esp_err_t StartNetworkOta(std::uint16_t peer,SessionCredentials& output,std::uin
         (rc=esp_wifi_start())!=ESP_OK) { Teardown();return rc; }
     }
     httpd_config_t http=HTTPD_DEFAULT_CONFIG();http.stack_size=8192;http.max_open_sockets=SATORI_OTA_HTTP_MAX_OPEN_SOCKETS;
-    http.recv_wait_timeout=3;http.send_wait_timeout=3;http.max_uri_handlers=2;http.lru_purge_enable=SATORI_OTA_HTTP_LRU_PURGE;
+    http.recv_wait_timeout=3;http.send_wait_timeout=3;http.max_uri_handlers=3;http.lru_purge_enable=SATORI_OTA_HTTP_LRU_PURGE;
     if ((rc=httpd_start(&server,&http))!=ESP_OK) { Teardown();return rc; }
     const httpd_uri_t handler{.uri="/v1/ota/image",.method=HTTP_POST,.handler=Upload,.user_ctx=nullptr};
     if ((rc=httpd_register_uri_handler(server,&handler))!=ESP_OK) { Teardown();return rc; }
     const httpd_uri_t page{.uri="/",.method=HTTP_GET,.handler=Page,.user_ctx=nullptr};
     if ((rc=httpd_register_uri_handler(server,&page))!=ESP_OK) { Teardown();return rc; }
+    const httpd_uri_t layout{.uri="/v1/ota/layout",.method=HTTP_GET,.handler=Layout,.user_ctx=nullptr};
+    if ((rc=httpd_register_uri_handler(server,&layout))!=ESP_OK) { Teardown();return rc; }
     if(!Alive()){Teardown();return ESP_ERR_INVALID_STATE;}
     output=credentials;Status(WindowState::Open);
     if (xTaskCreate(Supervisor,"ota_lifetime",4096,nullptr,5,nullptr)!=pdPASS) { Teardown();return ESP_ERR_NO_MEM; }
@@ -292,7 +304,7 @@ void CommandWorker(void*) {
         xSemaphoreTake(commit_lock,portMAX_DELAY);
         const auto before=Snapshot(work.lan);
         const auto admission=work.lan&&!lan_replay.Accept(work.command.request_id,work.fingerprint)?WindowAdmission{WindowResult::Invalid,false,false}:
-            protocol[work.lan?1:0].Admit(work.command,active&&lan_mode!=work.lan?WindowState::Committed:before.state,before.window_id,OfficialSignaturePolicyReady());
+            protocol[work.lan?1:0].Admit(work.command,active&&lan_mode!=work.lan?WindowState::Committed:before.state,before.window_id,OfficialUpdateLayoutReady()&&OfficialSignaturePolicyReady());
         portENTER_CRITICAL(&status_lock);
         window_status[work.lan?1:0].ack_request_id=work.command.request_id;window_status[work.lan?1:0].result=admission.result;
         portEXIT_CRITICAL(&status_lock);

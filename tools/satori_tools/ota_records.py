@@ -79,3 +79,34 @@ def selection(old, target):
 
 def pad_region(blob):
     return blob + b'\xff' * ((-len(blob)) % 4096)
+
+FACTORY_LAYOUT = [
+    (1, 2, 0x9000, 0x6000, 'nvs', 0),
+    (1, 1, 0xf000, 0x1000, 'phy_init', 0),
+    (0, 0, 0x10000, 0x200000, 'factory', 0),
+    (1, 6, 0x300000, 0x2800, 'config', 0),
+]
+
+def classify_table(table):
+    """Exact public layouts only; malformed/extra/encrypted entries are unknown."""
+    if len(table) not in (0xc00, 0x1000): return 'unknown'
+    entries = []
+    for offset in range(0, len(table), 32):
+        row = table[offset:offset+32]
+        if row[:2] == b'\xeb\xeb':
+            if row[16:32] != hashlib.md5(table[:offset]).digest() or any(v != 255 for v in table[offset+32:]):
+                return 'unknown'
+            return 'dual-ota' if entries == EXPECTED_LAYOUT else 'factory' if entries == FACTORY_LAYOUT else 'unknown'
+        if len(row) != 32 or row[:2] != b'\xaa\x50':
+            return 'unknown'
+        _, kind, subtype, address, size, label, flags = struct.unpack('<HBBII16sI', row)
+        try: label = label.rstrip(b'\0').decode('ascii')
+        except UnicodeError: return 'unknown'
+        entries.append((kind, subtype, address, size, label, flags))
+    return 'unknown'
+
+def require_dual(table):
+    layout = classify_table(table)
+    if layout != 'dual-ota':
+        from .runtime import LayoutRejected
+        raise LayoutRejected('Factory layout requires explicit tools/migrate_layout.py; unknown layouts are unsupported; no update or automatic migration')

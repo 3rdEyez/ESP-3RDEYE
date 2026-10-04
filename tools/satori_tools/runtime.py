@@ -12,6 +12,10 @@ class Rejected(Exception):
     """Messages are fixed by our code; never include transport/secret data."""
 
 
+class LayoutRejected(Rejected):
+    """Fixed public migration guidance; never transport or secret text."""
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 

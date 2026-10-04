@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "date": "2026-10-04",
+  "scope": "offline layout migration development validation",
+  "bases": {
+    "firmware": "16ad002f0587b3317d004d6413679710ad9228be",
+    "app": "57e423afe06532e7aa63ee9b99f0d6dc5bdd4791"
+  },
+  "default_profile": "ble_wifi_ota_prototype",
+  "checks": {
+    "firmware_python_tests": 61,
+    "host_cpp_script_suites": 9,
+    "app_python_tests": 7,
+    "flutter_tests": 156,
+    "flutter_analyze": "passed",
+    "ble_contract": "passed",
+    "tracked_diff_whitespace": "passed",
+    "new_source_whitespace": "passed"
+  },
+  "builds": {
+    "sdk": "ESP-IDF v5.5.4",
+    "profiles_passed": [
+      "ble_wifi_ota_prototype",
+      "ble_primary",
+      "legacy_udp",
+      "ble_dual_ota"
+    ],
+    "default_final_source_rebuilt": true,
+    "default_artifact": "satori-0.2.8-ble_wifi_ota_prototype-dual-ota-unsigned.bin",
+    "default_unsigned_size": 1441792,
+    "default_unsigned_sha256": "2564184b3aa6aa4ad31c0af91ec1be6e5de12b29eecd742d84462090f2082eb8",
+    "signed_size_fits_slot": true,
+    "signing_performed": false
+  },
+  "guards": {
+    "sdk_registered_write_actions": "offline policy tests passed",
+    "ninja_refusal_target": "expected refusal passed; flash dependency checked; flash not invoked",
+    "factory_unknown_layout": "refused before normal USB writes or wireless POST",
+    "webpage_layout_probe": "Node tests passed"
+  },
+  "migration_tests": {
+    "count": 12,
+    "coverage": [
+      "factory/dual/unknown/encrypted layouts",
+      "double backup mismatch",
+      "nonempty staging and ota sectors",
+      "image body/proof mismatch",
+      "old image fit",
+      "interruption at each write stage",
+      "full flash readback corruption",
+      "protected PHY/config/fallback corruption",
+      "factory normal USB refusal",
+      "personal confirmation cancellation"
+    ]
+  },
+  "independent_reviews": [
+    "migration_audit: no remaining blockers",
+    "review_firmware: no remaining blockers",
+    "review_usb_desktop: no remaining blockers"
+  ],
+  "device_actions": false,
+  "private_material_read": false,
+  "commit_or_push": false,
+  "limits": [
+    "Real hardware migration and power-cut recovery not exercised.",
+    "Bootloader or partition-table interrupted writes need manual recovery; app rollback does not protect them.",
+    "Manual external esptool commands cannot be prevented by repository guards.",
+    "Successful migration requires existing identity/config readiness; no implicit provisioning."
+  ]
+}

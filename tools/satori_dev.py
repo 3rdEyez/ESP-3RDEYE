@@ -8,8 +8,8 @@ import signal
 import sys
 import threading
 
-from satori_tools import artifacts, checks, maintenance, usb_upgrade, wireless
-from satori_tools.runtime import ROOT, Rejected, digest, private_output
+from satori_tools import artifacts, checks, maintenance, usb_upgrade, wireless, migration, ota_records
+from satori_tools.runtime import ROOT, Rejected, LayoutRejected, digest, private_output
 
 
 class Parser(argparse.ArgumentParser):
@@ -25,8 +25,8 @@ def parser():
     check = commands.add_parser('check', help='run synthetic firmware/optional App regressions')
     check.add_argument('--app-path', type=Path)
     check.add_argument('--flutter', help='Flutter executable; defaults to PATH')
-    build = commands.add_parser('build', help='isolated ESP-IDF profile build; never flash')
-    build.add_argument('profile', choices=('ble_primary', 'legacy_udp', 'ble_dual_ota', 'ble_wifi_ota_prototype'))
+    build = commands.add_parser('build', help='default unsigned dual OTA; historical factory profiles explicit; never flash')
+    build.add_argument('profile', nargs='?', default='ble_wifi_ota_prototype', choices=('ble_primary', 'legacy_udp', 'ble_dual_ota', 'ble_wifi_ota_prototype'), help='default: ble_wifi_ota_prototype (dual OTA)')
     inspect = commands.add_parser('inspect', help='offline image or .sota metadata; no authentication claim')
     inspect.add_argument('path', type=Path)
     inspect.add_argument('--package', action='store_true')
@@ -48,6 +48,12 @@ def parser():
             command.add_argument('--package', type=Path, help='verified single upload after personal INSTALL; bearer stays internal')
             command.add_argument('--public-key', type=Path)
             command.add_argument('--trust-sha256')
+    layout = commands.add_parser('check-layout', help='offline exact partition table check; no device access')
+    layout.add_argument('--table', type=Path, required=True)
+    migrate = commands.add_parser('migrate-layout', help='explicit factory-to-dual plan; never automatic')
+    migrate.add_argument('--config', type=Path, required=True)
+    migrate.add_argument('--backup-dir', type=Path)
+    migrate.add_argument('--execute', action='store_true', help='requires private TTY and personally typed MIGRATE; resets/writes bootloader and partition table')
     usb = commands.add_parser('usb-upgrade', help='normal app-only plan; --execute resets and writes the device')
     usb.add_argument('--config', type=Path, required=True, help='private artifact/reference/USB identity config; see README')
     usb.add_argument('--backup-dir', type=Path, help='new private directory outside checkout, mandatory for execution')
@@ -160,6 +166,7 @@ def usb_plan(config, base):
     current_path, current = load('current_app')
     _, boot = load('bootloader')
     _, table = load('partition_table')
+    ota_records.require_dual(table)
     public = (base / config['public_key']).resolve()
     artifacts.verify_image(image, public, config['trust_sha256'])
     artifacts.verify_image(current, public, config['trust_sha256'])
@@ -167,7 +174,23 @@ def usb_plan(config, base):
                             config['current_slot'], 1 - config['current_slot'], config['current_app']['sha256'])
 
 
-def execute_usb(plan, args, config):
+def migration_plan(config, base):
+    def load(name):
+        item = config[name]; value = (base / item['path']).read_bytes()
+        if digest(value) != item['sha256']: raise Rejected('Migration artifact identity differs')
+        return value
+    image = load('candidate')
+    public = (base / config['public_key']).resolve()
+    old_table = load('old_partition_table')
+    if ota_records.classify_table(old_table) != 'factory':
+        raise LayoutRejected('Migration requires supported factory layout; dual-ota devices update normally and unknown layouts require investigation')
+    artifacts.verify_image(image, public, config['trust_sha256'])
+    return migration.Plan(image, load('old_app'), load('old_bootloader'), old_table,
+                          load('new_bootloader'), load('new_partition_table'), load('new_unsigned_app'),
+                          json.loads(load('new_build_proof')), lambda: True)
+
+
+def execute_usb(plan, args, config, executor=usb_upgrade.execute):
     from satori_tools.usb_transport import Rom
     if not args.backup_dir:
         raise Rejected('Explicit private backup directory required')
@@ -180,21 +203,30 @@ def execute_usb(plan, args, config):
     def deadline(*_):
         raise TimeoutError()
     signal.signal(signal.SIGALRM, deadline)
+    def sync_directory(path):
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try: os.fsync(descriptor)
+        finally: os.close(descriptor)
     def save(value):
         path = output / 'metadata.json'
-        with path.open('w') as stream:
+        temporary = output / '.metadata.tmp'
+        with temporary.open('w') as stream:
             json.dump(value, stream, indent=2)
             stream.flush()
             os.fsync(stream.fileno())
-        path.chmod(0o600)
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+        sync_directory(output)
     def backup(number, blob):
         with (output / ('read-%d.bin' % number)).open('xb') as stream:
             stream.write(blob)
             stream.flush()
             os.fsync(stream.fileno())
+        sync_directory(output)
     try:
-        result = usb_upgrade.execute(plan, rom, save, backup)
-        return {key: result.get(key) for key in ('success', 'phase', 'error_type', 'interrupted', 'recovery_confirmed', 'port_closed', 'left_in_rom')}
+        sync_directory(output.parent)
+        result = executor(plan, rom, save, backup)
+        return {key: result.get(key) for key in ('success', 'phase', 'error_type', 'interrupted', 'recovery_confirmed', 'port_closed', 'left_in_rom', 'manual_recovery_required', 'boot_regions_write_started', 'automatic_recovery_attempted', 'guidance')}
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_alarm)
@@ -224,6 +256,19 @@ def run(args):
         if not args.execute:
             return {'offline_plan': True, 'device_accessed': False, 'requires': '--execute; maintenance also personal CONNECT and INSTALL for upload'}
         return terminal(args, config) if args.command == 'maintenance' else status_once(config)
+    if args.command == 'check-layout':
+        layout = ota_records.classify_table(args.table.read_bytes())
+        return {'layout': layout, 'update_allowed': layout == 'dual-ota', 'success': layout == 'dual-ota',
+                'guidance': 'Run explicit tools/migrate_layout.py for supported factory; unknown layout requires investigation; no automatic migration'}
+    if args.command == 'migrate-layout':
+        config = configuration(args.config)
+        plan = migration_plan(config, args.config.resolve().parent)
+        if not args.execute: return plan.public()
+        if not all(stream.isatty() for stream in (sys.stdin, sys.stdout, sys.stderr)):
+            raise Rejected('Migration requires private interactive TTY')
+        if input('Migration writes bootloader/table; partial writes are not protected by app rollback. Personally type MIGRATE: ') != 'MIGRATE':
+            return {'cancelled': True, 'device_accessed': False}
+        return execute_usb(plan, args, config, migration.execute)
     if args.command == 'usb-upgrade':
         config = configuration(args.config)
         plan = usb_plan(config, args.config.resolve().parent)
@@ -241,7 +286,7 @@ def main(argv=None):
         print(json.dumps(value, ensure_ascii=False, indent=2))
         return 0 if value.get('success', True) and value.get('build_exit_code', 0) == 0 else 2
     except (Exception, KeyboardInterrupt) as error:
-        print(json.dumps({'operation_failed': True, 'error_type': type(error).__name__, 'details_withheld': True, 'automatic_retry': False}))
+        print(json.dumps({'operation_failed': True, 'error_type': type(error).__name__, 'details_withheld': True, 'automatic_retry': False, **({'guidance': str(error)} if isinstance(error, (LayoutRejected, wireless.ota_upload.MigrationRequired)) else {})}))
         return 2
 
 

@@ -15,7 +15,7 @@ class Connection:
   if self.fail:raise TimeoutError('sensitive-secret')
  def getresponse(self):return self
  status=200
- def read(self,n):return b'sensitive-server-response'
+ def read(self,n):return b'{"layout":"dual-ota","update_allowed":true}' if self.requests[-1][0][0]=='GET' else b'sensitive-server-response'
  def close(self):self.closed=True
 class Tests(unittest.TestCase):
  def package(self):
@@ -24,7 +24,7 @@ class Tests(unittest.TestCase):
  def setUp(self):Connection.instances=[];Connection.fail=False
  def test_one_post_no_secret_result(self):
   token='a'*32;r=ota_upload.upload_once('192.168.1.80',self.package(),token,connection_factory=Connection)
-  self.assertEqual(len(Connection.instances[0].requests),1);self.assertTrue(r['submitted_for_restart']);self.assertFalse(r['upgrade_verified']);self.assertNotIn(token,json.dumps(r));self.assertTrue(Connection.instances[0].closed)
+  self.assertEqual([c.requests[0][0][0] for c in Connection.instances],['GET','POST']);self.assertTrue(r['submitted_for_restart']);self.assertFalse(r['upgrade_verified']);self.assertNotIn(token,json.dumps(r));self.assertTrue(Connection.instances[0].closed)
  def test_timeout_does_not_retry(self):
   Connection.fail=True
   with self.assertRaises(TimeoutError):ota_upload.upload_once('192.168.1.80',self.package(),'a'*32,connection_factory=Connection)
@@ -68,5 +68,19 @@ class Tests(unittest.TestCase):
   self.assertEqual(output.getvalue(),'')
  def test_ap_explicit(self):
   r=ota_upload.upload_once('192.168.4.1',self.package(),'',True,connection_factory=Connection)
-  self.assertTrue(r['submitted_for_restart']);self.assertNotIn('X-Satori-Window',Connection.instances[0].requests[0][1]['headers'])
+  self.assertTrue(r['submitted_for_restart']);self.assertNotIn('X-Satori-Window',Connection.instances[-1].requests[0][1]['headers'])
 if __name__=='__main__':unittest.main()
+
+class LayoutTests(unittest.TestCase):
+ package=Tests.package
+ setUp=Tests.setUp
+ def test_factory_unknown_missing_endpoint_and_untyped_allow_never_post(self):
+  for code,body in ((200,b'{"layout":"factory","update_allowed":false}'),(200,b'{"layout":"unknown","update_allowed":false}'),(404,b'not supported'),(200,b'{"layout":"dual-ota","update_allowed":1}')):
+   Connection.instances=[]
+   class Bad(Connection):
+    status=code
+    def read(self,n):return body
+   callback=[]
+   with self.assertRaises(ota_upload.MigrationRequired):ota_upload.upload_once('192.168.1.80',self.package(),'a'*32,connection_factory=Bad,on_post_start=lambda:callback.append(True))
+   self.assertEqual(callback,[])
+   self.assertEqual([request[0][0] for connection in Connection.instances for request in connection.requests],['GET'])

@@ -66,6 +66,7 @@ static void httpd_sess_delete_invalid(httpd_data*){}
 static void httpd_process_ctrl_msg(httpd_data*){if(!work.empty()){auto item=work.front();work.erase(work.begin());item.first(item.second);}}
 static int fake_select(int,fd_set* f,fd_set*,fd_set*,timeval*){listen_requested=FD_ISSET(3,f);FD_ZERO(f);if(listen_requested)FD_SET(3,f);if(!work.empty())FD_SET(4,f);if(current->slot.fd>=0)FD_SET(current->slot.fd,f);return 1;}
 static bool Alive(){return true;}
+static bool OfficialUpdateLayoutReady(){return true;}
 static int httpd_resp_set_hdr(httpd_req_t*,const char* name,const char* value){if(!strcmp(name,"Connection"))closed_header=!strcmp(value,"close");return ESP_OK;}
 static int httpd_resp_set_type(httpd_req_t*,const char*){return ESP_OK;}
 static int httpd_resp_send_err(httpd_req_t*,int,const char*){sent=true;return ESP_OK;}

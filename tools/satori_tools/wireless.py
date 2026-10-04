@@ -38,8 +38,7 @@ def handoff(session,blob,decode_status,confirm,outcome,probe_page=probe,upload=N
     if s['ip']!=initial['ip'] or s['token']!=initial['token']:raise Rejected('窗口地址或授权已变化，未上传。')
     token=s['token'].decode('ascii')
     try:
-        outcome['post_started']=True
-        result=upload(s['ip'],blob,token,timeout=30)
+        result=upload(s['ip'],blob,token,timeout=30,on_post_start=lambda:outcome.update(post_started=True))
         outcome['submitted']=result['submitted_for_restart']
         return result
     finally:token='';initial=None;s=None

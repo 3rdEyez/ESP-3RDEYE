@@ -4,9 +4,9 @@
 using esp_err_t = int;
 using esp_ota_handle_t = unsigned;
 constexpr int ESP_OK = 0;
-enum esp_partition_type_t { ESP_PARTITION_TYPE_APP, ESP_PARTITION_TYPE_DATA };
-enum esp_partition_subtype_t { ESP_PARTITION_SUBTYPE_APP_OTA_0, ESP_PARTITION_SUBTYPE_APP_OTA_1, ESP_PARTITION_SUBTYPE_OTHER };
-struct esp_partition_t { esp_partition_type_t type; esp_partition_subtype_t subtype; std::uint32_t address, size; bool encrypted; };
+enum esp_partition_type_t { ESP_PARTITION_TYPE_APP, ESP_PARTITION_TYPE_DATA, ESP_PARTITION_TYPE_ANY };
+enum esp_partition_subtype_t { ESP_PARTITION_SUBTYPE_APP_OTA_0, ESP_PARTITION_SUBTYPE_APP_OTA_1, ESP_PARTITION_SUBTYPE_OTHER, ESP_PARTITION_SUBTYPE_DATA_NVS, ESP_PARTITION_SUBTYPE_DATA_PHY, ESP_PARTITION_SUBTYPE_DATA_UNDEFINED, ESP_PARTITION_SUBTYPE_DATA_OTA, ESP_PARTITION_SUBTYPE_ANY };
+struct esp_partition_t { esp_partition_type_t type; esp_partition_subtype_t subtype; std::uint32_t address, size; bool encrypted; bool readonly{false}; };
 enum esp_ota_img_states_t { ESP_OTA_IMG_NEW, ESP_OTA_IMG_PENDING_VERIFY, ESP_OTA_IMG_VALID, ESP_OTA_IMG_INVALID };
 struct esp_app_desc_t;
 const esp_partition_t* esp_ota_get_running_partition();
@@ -19,3 +19,9 @@ esp_err_t esp_ota_abort(esp_ota_handle_t);
 esp_err_t esp_ota_set_boot_partition(const esp_partition_t*);
 esp_err_t esp_ota_get_partition_description(const esp_partition_t*, esp_app_desc_t*);
 esp_err_t esp_partition_read(const esp_partition_t*, std::size_t, void*, std::size_t);
+
+using esp_partition_iterator_t = void*;
+esp_partition_iterator_t esp_partition_find(esp_partition_type_t,esp_partition_subtype_t,const char*);
+esp_partition_iterator_t esp_partition_next(esp_partition_iterator_t);
+void esp_partition_iterator_release(esp_partition_iterator_t);
+const esp_partition_t* esp_partition_find_first(esp_partition_type_t,esp_partition_subtype_t,const char*);

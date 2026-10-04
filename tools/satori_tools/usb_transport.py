@@ -68,7 +68,7 @@ class Rom:
         sec=self.esp.get_security_info()
         if self.esp.IS_STUB or self.esp.sync_stub_detected or sec['flags']!=0 or sec['flash_crypt_cnt'].bit_count()%2:raise Rejected('Unexpected ROM/security state')
         self.esp.flash_spi_attach(0)
-        if self.esp.flash_id()!=self.flash_id:raise Rejected('Unexpected flash ID')
+        if ((self.flash_id >> 16) & 0xff) != 0x16 or self.esp.flash_id()!=self.flash_id:raise Rejected('Unexpected flash ID')
         self.esp.flash_set_parameters(FLASH)
     def read(self,start,length):self.timeout(180 if length==FLASH else 30);return self.esp.read_flash(start,length)
     def write(self,start,blob):self.timeout(240 if start!=OTADATA else 30);write_region(self.esp,start,blob)

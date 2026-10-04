@@ -15,6 +15,7 @@ esp_ota_img_states_t state;
 esp_app_desc_t current_desc, offered_desc;
 unsigned begins, writes, ends, aborts, selections, policy_checks;
 bool live, policy_ok, read_ok;
+unsigned layout_count=6; bool layout_bad=false;
 int begin_rc, write_rc, end_rc, selection_rc, state_rc, description_rc;
 int sha_start_rc, sha_update_rc, sha_finish_rc;
 unsigned key_count;
@@ -26,6 +27,7 @@ std::vector<unsigned char> flash;
     return guard_allowed && (guard_fail_at == 0 || guard_calls < guard_fail_at);
 }
 void Reset() {
+    layout_count=6; layout_bad=false;
     run_part = {ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, 0x10000, kSlotSize, false};
     next_part = {ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, 0x180000, kSlotSize, false};
     state = ESP_OTA_IMG_VALID;
@@ -57,6 +59,22 @@ ImageManifest ImageMetadata(const std::vector<unsigned char>& image) {
 Manifest Core(const ImageManifest& manifest) {
     return {"satori_c3_v1", "esp32c3", Slot::Ota1, manifest.image_size, manifest.sha256};
 }
+}
+esp_partition_iterator_t esp_partition_find(esp_partition_type_t,esp_partition_subtype_t,const char*) { return layout_count?reinterpret_cast<void*>(1):nullptr; }
+esp_partition_iterator_t esp_partition_next(esp_partition_iterator_t it) { const auto i=reinterpret_cast<std::uintptr_t>(it);return i<layout_count?reinterpret_cast<void*>(i+1):nullptr; }
+void esp_partition_iterator_release(esp_partition_iterator_t) {}
+const esp_partition_t* esp_partition_find_first(esp_partition_type_t type,esp_partition_subtype_t subtype,const char* label) {
+    if(layout_bad)return nullptr;
+    if(!std::strcmp(label,"ota_0"))return run_part.subtype==ESP_PARTITION_SUBTYPE_APP_OTA_0?&run_part:nullptr;
+    if(!std::strcmp(label,"ota_1"))return next_part.subtype==ESP_PARTITION_SUBTYPE_APP_OTA_1?&next_part:nullptr;
+    static esp_partition_t data;
+    data={type,subtype,0,0,false};
+    if(!std::strcmp(label,"nvs")){data.address=0x9000;data.size=0x6000;}
+    else if(!std::strcmp(label,"phy_init")){data.address=0xf000;data.size=0x1000;}
+    else if(!std::strcmp(label,"config")){data.address=0x300000;data.size=0x2800;}
+    else if(!std::strcmp(label,"otadata")){data.address=0x303000;data.size=0x2000;}
+    else return nullptr;
+    return &data;
 }
 const esp_partition_t* esp_ota_get_running_partition() { return &run_part; }
 const esp_partition_t* esp_ota_get_next_update_partition(const esp_partition_t*) { return &next_part; }
@@ -115,7 +133,12 @@ int main() {
     }
     return 0;
 #else
-    Reset(); assert(OfficialSignaturePolicyReady());
+    Reset(); assert(OfficialSignaturePolicyReady()); assert(OfficialUpdateLayoutReady());
+    for(unsigned mode=0;mode<5;++mode){
+        Reset(); if(mode==0)layout_count=4; else if(mode==1)layout_count=7; else if(mode==2)layout_bad=true; else if(mode==3)next_part.encrypted=true; else next_part.readonly=true;
+        const auto image=Image();const auto manifest=ImageMetadata(image);IdfOtaSink sink(manifest);
+        assert(!OfficialUpdateLayoutReady());assert(!sink.Begin(Core(manifest)));assert(begins==0);
+    }
     // Same version/different bytes, identical package twice, downgrade and upgrade.
     for(unsigned scenario=0;scenario<5;++scenario){
         Reset();std::strcpy(current_desc.version,"0.2.5");auto image=Image();

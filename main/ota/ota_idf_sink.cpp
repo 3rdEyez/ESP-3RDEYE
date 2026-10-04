@@ -18,6 +18,26 @@ bool ExactSlot(const esp_partition_t* p) {
          (SlotOf(p)==Slot::Ota1&&p->address==0x180000));
 }
 }
+bool OfficialUpdateLayoutReady() {
+    unsigned count = 0;
+    auto iterator = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
+    while (iterator) {
+        if (++count > 6) { esp_partition_iterator_release(iterator); return false; }
+        iterator = esp_partition_next(iterator);
+    }
+    if (count != 6) return false;
+    const auto matches = [](esp_partition_type_t type, esp_partition_subtype_t subtype,
+                            const char* label, std::uint32_t address, std::uint32_t size) {
+        const auto* p = esp_partition_find_first(type, subtype, label);
+        return p && !p->encrypted && !p->readonly && p->address == address && p->size == size;
+    };
+    return matches(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, "nvs", 0x9000, 0x6000) &&
+           matches(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_PHY, "phy_init", 0xf000, 0x1000) &&
+           matches(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_UNDEFINED, "config", 0x300000, 0x2800) &&
+           matches(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, "otadata", 0x303000, 0x2000) &&
+           matches(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, "ota_0", 0x10000, kSlotSize) &&
+           matches(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, "ota_1", 0x180000, kSlotSize);
+}
 bool OfficialSignaturePolicyReady() {
 #if CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT && CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT && CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME && !CONFIG_SECURE_BOOT
     esp_image_sig_public_key_digests_t keys{};
@@ -42,7 +62,7 @@ bool IdfOtaSink::running_valid() const {
 bool IdfOtaSink::Begin(const Manifest& m) {
     if (attempted_) return false;
     attempted_=true;
-    if ((continue_guard_&&!continue_guard_())||!OfficialSignaturePolicyReady()||!running_valid()||!ExactSlot(update_)||running_==update_||
+    if ((continue_guard_&&!continue_guard_())||!OfficialUpdateLayoutReady()||!OfficialSignaturePolicyReady()||!running_valid()||!ExactSlot(update_)||running_==update_||
         running_->address==update_->address||m.target_slot!=update_slot()||
         m.board!="satori_c3_v1"||m.chip!="esp32c3"||!ManifestValid(manifest_)||
         m.image_size!=manifest_.image_size||m.sha256!=manifest_.sha256) return false;
@@ -81,7 +101,7 @@ Verification IdfOtaSink::FinishVerifyAuthenticity() {
     ok=ok&&mbedtls_sha256_finish(&stored,hash.data())==0&&hash==manifest_.sha256;
     mbedtls_sha256_free(&stored);
     if (!ok) return Verification::IntegrityFailure;
-    if (!OfficialSignaturePolicyReady()) return Verification::AuthenticityFailure;
+    if (!OfficialUpdateLayoutReady()||!OfficialSignaturePolicyReady()) return Verification::AuthenticityFailure;
     // Under the approved native config, esp_ota_end verifies the actual SBv2
     // RSA3072 signature against the running signed app, as well as image/chip.
     const auto rc=esp_ota_end(handle_);active_=false;handle_=0;
@@ -98,7 +118,7 @@ Verification IdfOtaSink::FinishVerifyAuthenticity() {
     verified_=true;return Verification::Verified;
 }
 bool IdfOtaSink::SetBootTarget(Slot slot) {
-    if ((continue_guard_&&!continue_guard_())||!verified_||selected_||slot!=update_slot()||!running_valid()) return false;
+    if ((continue_guard_&&!continue_guard_())||!OfficialUpdateLayoutReady()||!verified_||selected_||slot!=update_slot()||!running_valid()) return false;
     if (esp_ota_set_boot_partition(update_)!=ESP_OK) return false;
     selected_=true;verified_=false;return true;
 }

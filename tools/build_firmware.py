@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Build one isolated firmware profile with an activated ESP-IDF 5.5.4."""
+"""Build unsigned dual-OTA by default with ESP-IDF 5.5.4; factory profiles are explicit historical choices."""
 
 import argparse
+import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -58,6 +60,9 @@ def main_profile(profile: str) -> int:
         raise ValueError("Unknown firmware profile")
     root = Path(__file__).resolve().parent.parent
     try:
+        cached = root / 'build' / profile / 'sdkconfig'
+        if cached.is_file() and any(line.strip() == 'CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y' for line in cached.read_text().splitlines()):
+            raise RuntimeError('Automatic signing is not a build action; use explicit sign-package')
         command = idf_command()
         if os.name == "nt" and any(" " in part or "(" in part or ")" in part
                                for part in (str(root), command[0], command[1])):
@@ -68,8 +73,33 @@ def main_profile(profile: str) -> int:
             raise RuntimeError("Cannot run idf.py; activate ESP-IDF 5.5.4 first.")
         if version.stdout.strip() != EXPECTED_IDF_VERSION:
             raise RuntimeError(f"Expected {EXPECTED_IDF_VERSION}, found {version.stdout.strip() or 'unknown'}.")
-        return subprocess.run(command + build_args(root, profile), cwd=root,
-                              check=False).returncode
+        result = subprocess.run(command + build_args(root, profile), cwd=root, check=False, capture_output=True, text=True)
+        # SDK boilerplate recommends unchecked full flash; product updates use our gated tools.
+        print(result.stdout.split('Project build complete.', 1)[0], end='')
+        if result.stderr: print(result.stderr, end='', file=sys.stderr)
+        code = result.returncode
+        if code == 0:
+            version = (root / 'version.txt').read_text().strip()
+            if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+                raise RuntimeError('Invalid artifact version')
+            image = root / 'build' / profile / 'app.bin'
+            if image.is_file():
+                from satori_tools.ota_records import classify_table
+                actual_layout = classify_table((image.parent / 'partition_table/partition-table.bin').read_bytes())
+                expected_layout = 'dual-ota' if profile in ('ble_dual_ota', 'ble_wifi_ota_prototype') else 'factory'
+                if actual_layout != expected_layout:
+                    raise RuntimeError('Cached layout conflicts with profile; reconfigure the isolated build')
+                layout = 'dual-ota' if expected_layout == 'dual-ota' else 'factory-historical'
+                artifact = image.with_name(f'satori-{version}-{profile}-{layout}-unsigned.bin')
+                if profile == 'ble_wifi_ota_prototype':
+                    from satori_tools.migration import build_proof, REQUIRED_FLAGS
+                    proof = build_proof(image.parent, EXPECTED_IDF_VERSION)
+                    if proof['flags'] != REQUIRED_FLAGS:
+                        raise RuntimeError('Cached security/profile flags conflict; no deployable artifact proof')
+                    artifact.with_suffix('.public-build.json').write_text(json.dumps(proof, indent=2) + '\n')
+                shutil.copyfile(image, artifact)
+        if code == 0: print('Build complete: unsigned development artifact; use explicit migration or checked update tools, never direct flash.')
+        return code
     except (OSError, RuntimeError) as exc:
         print(f"Build setup error: {exc}", file=sys.stderr)
         return 2
@@ -77,7 +107,7 @@ def main_profile(profile: str) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("profile", nargs="?", choices=PROFILES, default="ble_primary")
+    parser.add_argument("profile", nargs="?", choices=PROFILES, default="ble_wifi_ota_prototype", help="default: ble_wifi_ota_prototype (dual OTA); factory profiles require explicit selection")
     return main_profile(parser.parse_args().profile)
 
 

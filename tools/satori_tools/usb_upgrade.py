@@ -4,7 +4,7 @@ import ota_package as package
 from . import ota_records as model
 from . import ota_records as migration
 from . import ota_records as stage
-from .runtime import Rejected,digest as sha
+from .runtime import Rejected,LayoutRejected,digest as sha
 SLOT=0x170000
 FLASH=0x400000
 OTADATA=0x303000
@@ -23,7 +23,7 @@ class Plan:
         if current_slot not in (0,1) or target_slot not in (0,1) or target_slot==current_slot:raise Rejected('Wrong or active target slot')
         if expected_current_sha is None or sha(current_seed)!=expected_current_sha:raise Rejected('Current rollback image identity mismatch')
         self.seed_metadata=package.image_metadata(current_seed)
-        model.validate_partition_table(table)
+        model.require_dual(table)
         self.metadata=validate_candidate(image,expected_signed_sha,verify)
         self.image=image;self.seed=current_seed;self.boot=migration.pad_region(boot);self.table=migration.pad_region(table)
         self.current_slot=current_slot;self.target=target_slot;self.start=0x10000+target_slot*SLOT;self.padded=migration.pad_region(image)
@@ -31,8 +31,8 @@ class Plan:
     def public(self):return {'mode':'normal-lan','candidate_version':self.metadata['version'],'candidate_sha256':sha(self.image),'candidate_bytes':len(self.image),'expected_running_version':self.seed_metadata['version'],'expected_running_slot':self.current_slot,'target_slot':self.target,'app_write_address':hex(self.start),'app_write_bytes':len(self.padded),'otadata_address':hex(OTADATA),'otadata_bytes':4096,'otadata_readback_bytes':8192,'bootloader_table_nvs_config_written':False,'fresh_double_backup_required':True,'recovery':'restore exact former otadata only after protected regions verified; preserve signed seed','signature_verified':True,'workflow_deadline_seconds':900,'recovery_deadline_seconds':300}
     def validate_current(self,first,second):
         if len(first)!=FLASH or first!=second:raise Rejected('Fresh double backup mismatch')
+        model.require_dual(first[0x8000:0x8c00])
         if first[:len(self.boot)]!=self.boot or first[0x8000:0x8000+len(self.table)]!=self.table:raise Rejected('Immutable bootloader/table differs')
-        model.validate_partition_table(first[0x8000:0x8c00])
         old=first[OTADATA:OTADATA+8192];records=stage.records(old)
         eligible=[r for r in records if r[2]]
         if not eligible or max(eligible,key=lambda r:r[0])[1]!=2 or model.selected_slot(old)!=self.current_slot:raise Rejected('Actual selected slot is not expected VALID baseline')
@@ -125,6 +125,7 @@ def execute(plan,io,save=lambda meta:None,backup=lambda number,blob:None):
         # A cooperative Ctrl+C gets the same bounded rollback as transport
         # failure. Further Ctrl+C cannot interrupt this single recovery/cleanup.
         old_sigint=signal.getsignal(signal.SIGINT);signal.signal(signal.SIGINT,signal.SIG_IGN)
+        if isinstance(error,LayoutRejected):result['guidance']=str(error)
         result['interrupted']=isinstance(error,KeyboardInterrupt)
         result['failed_phase']=result.get('phase');result['error_type']=type(error).__name__;result['failure_reason']=str(error) if isinstance(error,Rejected) else ('User interrupted deployment' if isinstance(error,KeyboardInterrupt) else 'Transport operation failed')
         if baseline is not None and result['writes_started']:
