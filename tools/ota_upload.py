@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Computer-to-device single-shot OTA upload. Default is offline package plan."""
-import argparse,getpass,http.client,ipaddress,json,socket,threading,time
+import argparse,getpass,http.client,ipaddress,json,socket,threading,time,sys,warnings
 from pathlib import Path
 from ota_package import decode_package
 
@@ -43,6 +43,13 @@ def upload_once(host,package,token,ap=False,timeout=30,connection_factory=http.c
     finally:
         timer.cancel();conn.close()
 
+def hidden_token():
+    if not sys.stdin.isatty() or not sys.stdout.isatty() or not sys.stderr.isatty():
+        raise ValueError('A private interactive TTY is required for the window code')
+    with warnings.catch_warnings():
+        warnings.simplefilter('error',getpass.GetPassWarning)
+        return getpass.getpass('Current LAN window authorization code (hidden): ')
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('package',type=Path)
     parser.add_argument('--host',help='Device IPv4 from the maintenance page');parser.add_argument('--ap-fallback',action='store_true')
@@ -52,10 +59,11 @@ def main():
         print(json.dumps({'offline_plan':True,'metadata':manifest,'signature_verified':False,'network_access':False},indent=2));return 0
     if not args.host:parser.error('--host is required for installation')
     # Prompt at the terminal. Never accept secrets in argv or print exception data.
-    token='' if args.ap_fallback else getpass.getpass('Current LAN window authorization code (hidden): ')
+    token=''
     try:
+        if not args.ap_fallback:token=hidden_token()
         result=upload_once(args.host,blob,token,args.ap_fallback);print(json.dumps(result,indent=2))
-        if result['submitted_for_restart']:print('Submitted. Reconnect and verify firmware version and VALID boot state; motion does not resume automatically.')
+        if result['submitted_for_restart']:print('Submitted. Reconnect and verify the installed firmware version and VALID boot state; motion does not resume automatically.')
         else:print('Device rejected upload. Do not automatically resend.')
         return 0 if result['submitted_for_restart'] else 2
     except Exception as exc:

@@ -168,6 +168,8 @@ void connect_wifi(void)
 #if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
 #include "connect_wifi.h"
 #include <atomic>
+#include "nvs.h"
+#include "saved_network_policy.hpp"
 #include "mbedtls/platform_util.h"
 namespace {
 std::atomic<bool> maintenance_wifi_started{false},maintenance_stopping{true},maintenance_ready{false},maintenance_failed{false};
@@ -221,6 +223,35 @@ esp_err_t StartMaintenanceSta(const char* ssid,const char* password) {
     mbedtls_platform_zeroize(&config,sizeof(config));
     if(rc==ESP_OK)rc=esp_wifi_start();
     if(rc!=ESP_OK){StopMaintenanceSta();return rc;}maintenance_wifi_started=true;return ESP_OK;
+}
+namespace {
+struct SavedNetwork { std::uint32_t schema{1};char ssid[33]{};char password[64]{}; };
+constexpr const char* kMaintenanceNamespace="maint_net";
+bool LoadMaintenanceNetwork(SavedNetwork& saved) {
+    nvs_handle_t handle{};
+    if(nvs_open(kMaintenanceNamespace,NVS_READONLY,&handle)!=ESP_OK)return false;
+    std::size_t size=sizeof(saved);const auto rc=nvs_get_blob(handle,"network",&saved,&size);nvs_close(handle);
+    return rc==ESP_OK&&size==sizeof(saved)&&saved.schema==1&&
+        std::memchr(saved.ssid,0,sizeof(saved.ssid))&&std::memchr(saved.password,0,sizeof(saved.password))&&
+        satori::ota::SavedMaintenanceCredentialsValid(saved.ssid,saved.password);
+}
+}
+bool HasSavedMaintenanceNetwork() {
+    nvs_handle_t handle{};if(nvs_open(kMaintenanceNamespace,NVS_READONLY,&handle)!=ESP_OK)return false;
+    std::size_t size=0;const auto rc=nvs_get_blob(handle,"network",nullptr,&size);nvs_close(handle);
+    return rc==ESP_OK&&size==sizeof(SavedNetwork);
+}
+esp_err_t SaveMaintenanceNetwork(const char* ssid,const char* password) {
+    if(!ssid||!password||!satori::ota::SavedMaintenanceCredentialsValid(ssid,password))return ESP_ERR_INVALID_ARG;
+    SavedNetwork saved;mbedtls_platform_zeroize(&saved,sizeof(saved));saved.schema=1;std::memcpy(saved.ssid,ssid,std::strlen(ssid));std::memcpy(saved.password,password,std::strlen(password));
+    nvs_handle_t handle{};auto rc=nvs_open(kMaintenanceNamespace,NVS_READWRITE,&handle);
+    if(rc==ESP_OK){rc=nvs_set_blob(handle,"network",&saved,sizeof(saved));if(rc==ESP_OK)rc=nvs_commit(handle);nvs_close(handle);}
+    mbedtls_platform_zeroize(&saved,sizeof(saved));return rc;
+}
+esp_err_t StartSavedMaintenanceSta() {
+    SavedNetwork saved;const bool valid=LoadMaintenanceNetwork(saved);
+    const auto rc=valid?StartMaintenanceSta(saved.ssid,saved.password):ESP_ERR_NOT_FOUND;
+    mbedtls_platform_zeroize(&saved,sizeof(saved));return rc;
 }
 bool MaintenanceStaReady(std::array<unsigned char,4>& ip) {
     const auto address=maintenance_ip.load();

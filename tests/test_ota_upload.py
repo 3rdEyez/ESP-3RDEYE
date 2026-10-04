@@ -1,4 +1,5 @@
-import contextlib,io,json,struct,sys,unittest,socket,threading,time,http.client
+import contextlib,io,json,struct,sys,unittest,socket,threading,time,http.client,getpass,warnings
+from unittest.mock import patch
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
 import ota_package,ota_upload
@@ -47,6 +48,24 @@ class Tests(unittest.TestCase):
     ota_upload.upload_once('127.0.0.1',self.package(),'a'*32,timeout=.2,connection_factory=lambda host,unused,timeout:http.client.HTTPConnection(host,port,timeout=timeout))
    self.assertLess(time.monotonic()-started,1);self.assertEqual(accepted,[True])
   finally:release.set();listener.close();thread.join(timeout=1)
+ def test_non_tty_hidden_code_refused_without_input(self):
+  with patch.object(sys,'stdin',io.StringIO()),patch.object(getpass,'getpass',side_effect=AssertionError()):
+   with self.assertRaises(ValueError):ota_upload.hidden_token()
+ def test_echo_warning_stops_before_http(self):
+  class Tty(io.StringIO):
+   def isatty(self):return True
+  def input_warning(*args):warnings.warn('synthetic-secret',getpass.GetPassWarning)
+  output=Tty();error=Tty()
+  with patch.object(sys,'stdin',Tty()),patch.object(sys,'stdout',output),patch.object(sys,'stderr',error),patch.object(sys,'argv',['upload','fake.sota','--host','192.168.1.80','--install-and-restart']),patch.object(Path,'read_bytes',return_value=self.package()),patch.object(getpass,'getpass',side_effect=input_warning),patch.object(ota_upload,'upload_once',side_effect=AssertionError()):
+   self.assertEqual(ota_upload.main(),2)
+  self.assertNotIn('synthetic-secret',output.getvalue()+error.getvalue());self.assertIn('GetPassWarning',output.getvalue())
+ def test_hidden_token_tty_success_no_secret_output(self):
+  class Tty(io.StringIO):
+   def isatty(self):return True
+  output=Tty()
+  with patch.object(sys,'stdin',Tty()),patch.object(sys,'stdout',output),patch.object(sys,'stderr',Tty()),patch.object(getpass,'getpass',return_value='a'*32):
+   self.assertEqual(ota_upload.hidden_token(),'a'*32)
+  self.assertEqual(output.getvalue(),'')
  def test_ap_explicit(self):
   r=ota_upload.upload_once('192.168.4.1',self.package(),'',True,connection_factory=Connection)
   self.assertTrue(r['submitted_for_restart']);self.assertNotIn('X-Satori-Window',Connection.instances[0].requests[0][1]['headers'])

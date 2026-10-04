@@ -6,6 +6,8 @@
 #include <cmath>
 #include <new>
 #include "ota_idf_sink.hpp"
+#include "ota_http_policy.hpp"
+#include "maintenance_lifetime.hpp"
 #include "ble_server.h"
 #include "connect_wifi.h"
 #include "esp_http_server.h"
@@ -34,7 +36,18 @@ std::atomic<bool> lan_mode{false};
 std::uint8_t lan_detail=0;
 httpd_handle_t server{nullptr};
 esp_netif_t* ap{nullptr};
-constexpr std::uint32_t kSessionMs=120000;
+constexpr std::uint32_t kSessionMs=kMaintenanceUploadMs;
+std::atomic<bool> uploading{false};
+std::atomic<std::uint32_t> upload_started_ms{0};
+std::atomic<std::uint16_t> maintenance_peer{0xffff};
+std::atomic<std::uint32_t> maintenance_connection_epoch{0};
+std::uint32_t Now();
+std::uint32_t Remaining(){
+    const bool in_upload=uploading.load(std::memory_order_acquire);
+    const auto base=in_upload?upload_started_ms.load(std::memory_order_acquire):started_ms.load(std::memory_order_acquire);
+    const auto now=Now();
+    return MaintenanceRemaining(now,base,in_upload,base);
+}
 portMUX_TYPE status_lock=portMUX_INITIALIZER_UNLOCKED;
 WindowStatus window_status[2]{};
 QueueHandle_t commands{nullptr};
@@ -44,6 +57,10 @@ void ClearCommand(CommandWork& work) {
     if(work.configuration){mbedtls_platform_zeroize(work.configuration,sizeof(LanCommand));delete work.configuration;}
     mbedtls_platform_zeroize(&work,sizeof(work));
 }
+struct WipeOnExit {
+    void* bytes;std::size_t size;
+    ~WipeOnExit(){mbedtls_platform_zeroize(bytes,size);}
+};
 LanReplayGuard lan_replay{};
 WindowProtocol protocol[2]{}; // command worker only
 void Status(WindowState state,WindowResult result=WindowResult::Ok) {
@@ -54,7 +71,7 @@ WindowStatus Snapshot(bool lan) {
 }
 std::uint32_t Now() { return static_cast<std::uint32_t>(esp_timer_get_time()/1000); }
 bool Alive() {
-    return active&&!cancelled&&!restart_requested&&static_cast<std::uint32_t>(Now()-started_ms)<kSessionMs&&
+    return active&&!cancelled&&!restart_requested&&Remaining()>0&&maintenance_connection_epoch==BleOtaConnectionEpoch()&&BleOtaPeerStillAuthorized(maintenance_peer)&&
         BleOtaMaintenanceStopped()&&(!lan_mode||!MaintenanceStaFailed());
 }
 bool ExactFields(const cJSON* object,std::initializer_list<const char*> fields) {
@@ -102,7 +119,7 @@ bool AuthorizedUpload(httpd_req_t* req) {
     const bool ok=rc==ESP_OK&&WindowBearerMatches(std::string_view(expected.data(),32),received);
     mbedtls_platform_zeroize(received,sizeof(received));mbedtls_platform_zeroize(expected.data(),expected.size());return ok;
 }
-esp_err_t Upload(httpd_req_t* req) {
+esp_err_t UploadBody(httpd_req_t* req) {
     if (!Alive()||!AuthorizedUpload(req)) return httpd_resp_send_err(req,HTTPD_403_FORBIDDEN,"Session not authorized");
     ImageManifest manifest;
     if (!ReadManifest(req,manifest)||req->content_len!=manifest.image_size||
@@ -114,7 +131,7 @@ esp_err_t Upload(httpd_req_t* req) {
         std::strcmp(confirmation,"confirm-restart")!=0) {
         cancelled=true;return httpd_resp_send_err(req,HTTPD_400_BAD_REQUEST,"Explicit install confirmation required");
     }
-    Status(WindowState::Uploading);
+    upload_started_ms.store(Now(),std::memory_order_relaxed);uploading.store(true,std::memory_order_release);Status(WindowState::Uploading);
     IdfOtaSink sink(manifest,Alive);Transfer transfer(sink);
     const Manifest core{"satori_c3_v1","esp32c3",sink.update_slot(),manifest.image_size,manifest.sha256};
     if (!transfer.Start(core,{true,BleOtaMaintenanceStopped(),sink.running_slot(),sink.running_valid()},Now(),kSessionMs)) {
@@ -146,6 +163,10 @@ esp_err_t Upload(httpd_req_t* req) {
     const auto result=httpd_resp_sendstr(req,"镜像已验签并写入，正在重启；请重新连接后确认固件版本与启动结果。");
     return result;
 }
+esp_err_t Upload(httpd_req_t* req) {
+    httpd_resp_set_hdr(req,"Connection","close");
+    return CloseHttpResponse(UploadBody(req));
+}
 void Teardown() {
     if (server) { (void)httpd_stop(server);server=nullptr; }
     if(lan_mode)StopMaintenanceSta();
@@ -157,6 +178,7 @@ void Teardown() {
     portEXIT_CRITICAL(&status_lock);
     if (!restart_requested) EndBleOtaMaintenance();
     if (!restart_requested) Status(WindowState::Closed);
+    uploading=false;maintenance_peer=0xffff;
     active=false; // release only after resources and this transport state are cleaned
     // Motion is not restored; normal control requires a new CLAIM and ARM.
 }
@@ -171,14 +193,15 @@ void Supervisor(void*) {
     vTaskDelete(nullptr);
 }
 esp_err_t Page(httpd_req_t* req) {
-    if (!Alive()) return httpd_resp_send_err(req,HTTPD_403_FORBIDDEN,"Maintenance window closed");
-    constexpr const char page[]=R"HTML(<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>觉瞳固件升级</title><style>body{font:18px sans-serif;max-width:40rem;margin:3rem auto;padding:1rem}button,input{font:inherit;margin:1rem 0}#status{white-space:pre-wrap}</style><h1>觉瞳固件升级</h1><p>维护窗口限时两分钟。升级期间运动已停止。电脑可直接上传签名包；LAN 模式需当前窗口授权码，AP 为显式备用。镜像仍须通过设备的验签与型号检查。</p><label>LAN 窗口授权码（仅本次使用；AP 模式留空）<input id="token" type="password" autocomplete="off"></label><br><input id="file" type="file" accept=".sota"><br><button id="install">安装并重启</button><p id="status" role="status"></p><script>
+    httpd_resp_set_hdr(req,"Connection","close");
+    if (!Alive()) return CloseHttpResponse(httpd_resp_send_err(req,HTTPD_403_FORBIDDEN,"Maintenance window closed"));
+    constexpr const char page[]=R"HTML(<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>觉瞳固件升级</title><style>body{font:18px sans-serif;max-width:40rem;margin:3rem auto;padding:1rem}button,input{font:inherit;margin:1rem 0}#status{white-space:pre-wrap}</style><h1>觉瞳固件升级</h1><p>维护窗口空闲十分钟后关闭；上传单独限时两分钟。升级期间运动已停止。电脑可直接上传签名包；LAN 模式需当前窗口授权码，AP 为显式备用。镜像仍须通过设备的验签与型号检查。</p><label>LAN 窗口授权码（仅本次使用；AP 模式留空）<input id="token" type="password" autocomplete="off"></label><br><input id="file" type="file" accept=".sota"><br><button id="install">安装并重启</button><p id="status" role="status"></p><script>
 const file=document.getElementById('file'),button=document.getElementById('install'),status=document.getElementById('status');
 button.onclick=async()=>{button.disabled=true;try{const f=file.files[0];if(!f||f.size>1507328+1028)throw Error('请选择正确大小的 .sota 包');const h=new DataView(await f.slice(0,4).arrayBuffer());const n=h.getUint32(0,true);if(n<1||n>1024||f.size<=4+n)throw Error('包头错误');const m=JSON.parse(await f.slice(4,4+n).text());const image=f.slice(4+n);if(image.size!==m.image_length)throw Error('镜像长度不匹配');if(!confirm('安装 '+m.version+' 并重启？运动不会自动恢复。'))return;status.textContent='正在上传，请勿断电。';const r=await fetch('/v1/ota/image',{method:'POST',headers:{'X-Satori-Manifest':JSON.stringify(m),'X-Satori-Install':'confirm-restart','X-Satori-Window':document.getElementById('token').value},body:image});status.textContent=await r.text();if(!r.ok)throw Error('设备拒绝升级；请查看结果，不要自动重试。');}catch(e){status.textContent=String(e);}finally{button.disabled=false;}};
 </script></html>)HTML";
     httpd_resp_set_type(req,"text/html; charset=utf-8");
     httpd_resp_set_hdr(req,"Cache-Control","no-store");
-    return httpd_resp_send(req,page,HTTPD_RESP_USE_STRLEN);
+    return CloseHttpResponse(httpd_resp_send(req,page,HTTPD_RESP_USE_STRLEN));
 }
 }
 esp_err_t StartNetworkOta(std::uint16_t peer,SessionCredentials& output,std::uint32_t connection_epoch,LanCommand* lan) {
@@ -188,7 +211,7 @@ esp_err_t StartNetworkOta(std::uint16_t peer,SessionCredentials& output,std::uin
     if (!OfficialSignaturePolicyReady()) return ESP_ERR_NOT_SUPPORTED;
     bool expected=false;
     if (!active.compare_exchange_strong(expected,true)) return ESP_ERR_INVALID_STATE;
-    lan_mode=lan!=nullptr;cancelled=false;restart_requested=false;started_ms=Now();
+    lan_mode=lan!=nullptr;cancelled=false;restart_requested=false;uploading=false;started_ms=Now();maintenance_peer=peer;maintenance_connection_epoch=connection_epoch;
     portENTER_CRITICAL(&status_lock);
     auto& status=window_status[lan_mode?1:0];status.window_id=esp_random();if (!status.window_id) status.window_id=1;lan_detail=0;lan_ip={};
     portEXIT_CRITICAL(&status_lock);
@@ -204,9 +227,10 @@ esp_err_t StartNetworkOta(std::uint16_t peer,SessionCredentials& output,std::uin
         auto token=LowerHex(random.data(),random.size());
         portENTER_CRITICAL(&status_lock);std::memcpy(lan_token.data(),token.data(),32);portEXIT_CRITICAL(&status_lock);
         mbedtls_platform_zeroize(token.data(),token.size());mbedtls_platform_zeroize(random.data(),random.size());
-        rc=StartMaintenanceSta(lan->ssid.data(),lan->password.data());
-        mbedtls_platform_zeroize(lan->ssid.data(),lan->ssid.size());mbedtls_platform_zeroize(lan->password.data(),lan->password.size());
-        if(rc!=ESP_OK){portENTER_CRITICAL(&status_lock);lan_detail=3;portEXIT_CRITICAL(&status_lock);Teardown();return rc;}
+        rc=lan->use_saved_network?StartSavedMaintenanceSta():StartMaintenanceSta(lan->ssid.data(),lan->password.data());
+        const WipeOnExit wipe_ssid{lan->ssid.data(),lan->ssid.size()};
+        const WipeOnExit wipe_pass{lan->password.data(),lan->password.size()};
+        if(rc!=ESP_OK){portENTER_CRITICAL(&status_lock);lan_detail=rc==ESP_ERR_NOT_FOUND?5:3;portEXIT_CRITICAL(&status_lock);Teardown();return rc;}
         const auto connect_start=Now();std::array<std::uint8_t,4> ip{};
         while(!MaintenanceStaReady(ip)&&!MaintenanceStaFailed()&&Alive()&&static_cast<std::uint32_t>(Now()-connect_start)<20000)
             vTaskDelay(pdMS_TO_TICKS(50));
@@ -214,10 +238,14 @@ esp_err_t StartNetworkOta(std::uint16_t peer,SessionCredentials& output,std::uin
             portENTER_CRITICAL(&status_lock);lan_detail=MaintenanceStaFailed()?3:2;portEXIT_CRITICAL(&status_lock);
             Teardown();return ESP_ERR_TIMEOUT;
         }
+        if(lan->remember_network&&(rc=SaveMaintenanceNetwork(lan->ssid.data(),lan->password.data()))!=ESP_OK){
+            portENTER_CRITICAL(&status_lock);lan_detail=6;portEXIT_CRITICAL(&status_lock);Teardown();return rc;
+        }
         portENTER_CRITICAL(&status_lock);lan_ip=ip;portEXIT_CRITICAL(&status_lock);
     } else {
     std::array<std::uint8_t,16> random{};
-    esp_fill_random(random.data(),random.size());const auto password=LowerHex(random.data(),random.size());
+    esp_fill_random(random.data(),random.size());auto password=LowerHex(random.data(),random.size());
+    const WipeOnExit wipe_password{password.data(),password.size()};
     esp_fill_random(random.data(),random.size());const auto bearer=LowerHex(random.data(),random.size());
     portENTER_CRITICAL(&status_lock);
     std::snprintf(credentials.ssid,sizeof(credentials.ssid),"SatoriEye-OTA-%.8s",bearer.c_str());
@@ -232,7 +260,7 @@ esp_err_t StartNetworkOta(std::uint16_t peer,SessionCredentials& output,std::uin
     wifi_init_config_t init=WIFI_INIT_CONFIG_DEFAULT();init.nvs_enable=0;
     rc=esp_wifi_init(&init);
     if (rc!=ESP_OK) { Teardown();return rc; }
-    wifi_config_t config{};
+    wifi_config_t config{};const WipeOnExit wipe_config{&config,sizeof(config)};
     std::memcpy(config.ap.ssid,credentials.ssid,std::strlen(credentials.ssid));
     config.ap.ssid_len=std::strlen(credentials.ssid);
     std::memcpy(config.ap.password,credentials.password,std::strlen(credentials.password));
@@ -242,8 +270,8 @@ esp_err_t StartNetworkOta(std::uint16_t peer,SessionCredentials& output,std::uin
         (rc=esp_wifi_set_config(WIFI_IF_AP,&config))!=ESP_OK||
         (rc=esp_wifi_start())!=ESP_OK) { Teardown();return rc; }
     }
-    httpd_config_t http=HTTPD_DEFAULT_CONFIG();http.stack_size=8192;http.max_open_sockets=1;
-    http.recv_wait_timeout=3;http.send_wait_timeout=3;http.max_uri_handlers=2;http.lru_purge_enable=false;
+    httpd_config_t http=HTTPD_DEFAULT_CONFIG();http.stack_size=8192;http.max_open_sockets=SATORI_OTA_HTTP_MAX_OPEN_SOCKETS;
+    http.recv_wait_timeout=3;http.send_wait_timeout=3;http.max_uri_handlers=2;http.lru_purge_enable=SATORI_OTA_HTTP_LRU_PURGE;
     if ((rc=httpd_start(&server,&http))!=ESP_OK) { Teardown();return rc; }
     const httpd_uri_t handler{.uri="/v1/ota/image",.method=HTTP_POST,.handler=Upload,.user_ctx=nullptr};
     if ((rc=httpd_register_uri_handler(server,&handler))!=ESP_OK) { Teardown();return rc; }
@@ -311,13 +339,13 @@ std::size_t ReadWifiOtaStatus(std::uint8_t* output,std::size_t capacity) {
     WindowStatus status{};SessionCredentials copy{};
     portENTER_CRITICAL(&status_lock);status=window_status[0];copy=credentials;portEXIT_CRITICAL(&status_lock);
     if (active&&!lan_mode&&!cancelled&&!restart_requested) {
-        const auto elapsed=static_cast<std::uint32_t>(Now()-started_ms);
-        status.remaining_ms=elapsed<kSessionMs?kSessionMs-elapsed:0;
+        status.remaining_ms=Remaining();
     } else status.remaining_ms=0;
     if(active&&lan_mode){status.state=WindowState::Closed;status.result=WindowResult::Busy;status.remaining_ms=0;copy={};}
     else if (status.ack_request_id==0&&!OfficialSignaturePolicyReady()) status.result=WindowResult::Unsupported;
     if (status.state!=WindowState::Open&&status.state!=WindowState::Uploading) copy={};
-    const auto bytes=EncodeWindowStatus(status,copy.ssid,copy.password);
+    auto bytes=EncodeWindowStatus(status,copy.ssid,copy.password);
+    const WipeOnExit wipe_encoded{bytes.data(),bytes.size()};
     mbedtls_platform_zeroize(&copy,sizeof(copy));
     if (bytes.size()>capacity) return 0;
     std::memcpy(output,bytes.data(),bytes.size());return bytes.size();
@@ -328,6 +356,7 @@ bool SubmitLanOtaCommand(std::uint16_t peer,const LanCommand& command) {
     CommandWork work{peer,command.window,BleOtaConnectionEpoch(),true,configuration,{}};
     std::array<std::uint8_t,107> canonical{};const auto wire=EncodeWindowCommand(command.window);
     std::memcpy(canonical.data(),wire.data(),wire.size());
+    canonical[0]=command.use_saved_network?2:(command.remember_network?3:1);
     const auto ssid_size=std::strlen(command.ssid.data()),password_size=std::strlen(command.password.data());
     canonical[10]=ssid_size;canonical[11]=password_size;
     std::memcpy(canonical.data()+12,command.ssid.data(),ssid_size);std::memcpy(canonical.data()+12+ssid_size,command.password.data(),password_size);
@@ -342,8 +371,7 @@ std::size_t ReadLanOtaStatus(std::uint8_t* output,std::size_t capacity) {
     WindowStatus status{};std::array<std::uint8_t,4> ip{};std::array<char,33> token{};std::uint8_t detail;
     portENTER_CRITICAL(&status_lock);status=window_status[1];ip=lan_ip;token=lan_token;detail=lan_detail;portEXIT_CRITICAL(&status_lock);
     const bool open=active&&lan_mode&&!cancelled&&!restart_requested;
-    const auto elapsed=static_cast<std::uint32_t>(Now()-started_ms);
-    status.remaining_ms=open&&elapsed<kSessionMs?kSessionMs-elapsed:0;
+    status.remaining_ms=open?Remaining():0;
     if(active&&!lan_mode){status.state=WindowState::Closed;status.result=WindowResult::Busy;status.remaining_ms=0;detail=0;ip={};token={};}
     else if(status.ack_request_id==0&&!OfficialSignaturePolicyReady())status.result=WindowResult::Unsupported;
     const bool expose=open&&(status.state==WindowState::Open||status.state==WindowState::Uploading);

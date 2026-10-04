@@ -1,4 +1,6 @@
 #include "lan_window_protocol.hpp"
+#include "saved_network_policy.hpp"
+#include "maintenance_lifetime.hpp"
 #include <cassert>
 #include <string>
 using namespace satori::ota;
@@ -23,6 +25,27 @@ int main() {
     assert(EncodeLanStatus({WindowState::Failed},3,{},{}).size()==24);
     assert(EncodeLanStatus({WindowState::Open},0,{},std::string(32,'z')).empty());
     assert(WindowBearerMatches(token,token));assert(!WindowBearerMatches(token,std::string(32,'b')));assert(!WindowBearerMatches(token,""));
+    std::vector<std::uint8_t> saved(12,0);saved[0]=2;saved[1]=1;WindowWriteLe32(saved.data()+2,44);
+    assert(DecodeLanCommand(saved.data(),saved.size(),decoded));assert(decoded.use_saved_network&&decoded.ssid[0]==0&&decoded.password[0]==0);
+    for(const auto offset:{1,6,10,11}) {auto invalid=saved;invalid[offset]=2;assert(!DecodeLanCommand(invalid.data(),invalid.size(),decoded));}
+    auto invalid=saved;invalid.push_back(0);assert(!DecodeLanCommand(invalid.data(),invalid.size(),decoded));
+    saved[0]=1;assert(!DecodeLanCommand(saved.data(),saved.size(),decoded)); // empty v1 never becomes saved reuse
+    assert(EncodeLanStatus({WindowState::Failed},5,{},{}).size()==24);
+    assert(SavedMaintenanceCredentialsValid("old-hotspot","synthetic-password"));
+    assert(!SavedMaintenanceCredentialsValid("","synthetic-password"));
+    assert(!SavedMaintenanceCredentialsValid("old-hotspot",""));
+    assert(!SavedMaintenanceCredentialsValid(std::string(33,'s'),"synthetic-password"));
+    assert(!SavedMaintenanceCredentialsValid("old-hotspot",std::string(64,'p')));
+    assert(!SavedMaintenanceCredentialsValid("old-hotspot","synthetic\npassword"));
+    assert(!SavedMaintenanceCredentialsValid(std::string("hot\0spot",8),"synthetic-password"));
+    auto remember=command;remember[0]=3;
+    assert(DecodeLanCommand(remember.data(),remember.size(),decoded));assert(decoded.remember_network&&!decoded.use_saved_network);
+    saved[0]=3;assert(!DecodeLanCommand(saved.data(),saved.size(),decoded));
+    assert(MaintenanceRemaining(599999,0,false,0)==1);
+    assert(MaintenanceRemaining(600000,0,false,0)==0);
+    assert(MaintenanceRemaining(610000,0,true,599000)==109000);
+    assert(MaintenanceRemaining(719000,0,true,599000)==0);
+    assert(MaintenanceRemaining(50,0xffffff00u,false,0)==600000-306);
     LanReplayGuard guard;std::array<std::uint8_t,32> digest{};
     assert(guard.Accept(42,digest));assert(guard.Accept(42,digest));digest[0]=1;assert(!guard.Accept(42,digest));
     WindowProtocol p;assert(!p.Admit({1,1,0},WindowState::Committed,0,true).execute);

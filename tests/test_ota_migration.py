@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -74,8 +75,9 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(flash[:start], original[:start])
                 self.assertEqual(flash[erase_end:], original[erase_end:])
 
+    @unittest.skipUnless(os.environ.get('IDF_PATH'), 'Set IDF_PATH for native selector source regression')
     def test_exact_pinned_idf_selector_accepts_generated_records(self):
-        source = Path('/home/kyle/esp/esp-idf/components/bootloader_support/src/bootloader_common_loader.c').read_text()
+        source = (Path(os.environ['IDF_PATH']) / 'components/bootloader_support/src/bootloader_common_loader.c').read_text()
         names = ['bootloader_common_ota_select_crc', 'bootloader_common_ota_select_invalid',
                  'bootloader_common_ota_select_valid', 'bootloader_common_select_otadata',
                  'bootloader_common_get_active_otadata']

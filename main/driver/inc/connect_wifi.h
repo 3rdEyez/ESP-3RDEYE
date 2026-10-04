@@ -13,5 +13,8 @@ void connect_wifi(void);
 esp_err_t StartMaintenanceSta(const char* ssid,const char* password);
 bool MaintenanceStaReady(std::array<unsigned char,4>& ip);
 bool MaintenanceStaFailed();
+esp_err_t StartSavedMaintenanceSta();
+esp_err_t SaveMaintenanceNetwork(const char* ssid,const char* password);
+bool HasSavedMaintenanceNetwork();
 void StopMaintenanceSta();
 #endif

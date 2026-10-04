@@ -53,10 +53,9 @@ def build_args(root: Path, profile: str) -> list[str]:
     ]
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("profile", nargs="?", choices=PROFILES, default="ble_primary")
-    args = parser.parse_args()
+def main_profile(profile: str) -> int:
+    if profile not in PROFILES:
+        raise ValueError("Unknown firmware profile")
     root = Path(__file__).resolve().parent.parent
     try:
         command = idf_command()
@@ -69,11 +68,17 @@ def main() -> int:
             raise RuntimeError("Cannot run idf.py; activate ESP-IDF 5.5.4 first.")
         if version.stdout.strip() != EXPECTED_IDF_VERSION:
             raise RuntimeError(f"Expected {EXPECTED_IDF_VERSION}, found {version.stdout.strip() or 'unknown'}.")
-        return subprocess.run(command + build_args(root, args.profile), cwd=root,
+        return subprocess.run(command + build_args(root, profile), cwd=root,
                               check=False).returncode
     except (OSError, RuntimeError) as exc:
         print(f"Build setup error: {exc}", file=sys.stderr)
         return 2
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("profile", nargs="?", choices=PROFILES, default="ble_primary")
+    return main_profile(parser.parse_args().profile)
 
 
 if __name__ == "__main__":

@@ -1,47 +1,67 @@
-# Computer-first LAN OTA (local 0.2.6 candidate)
+# LAN OTA (local 0.2.8 experience implementation)
 
-Normal control remains BLE. The new encrypted/authenticated characteristic
-`4d89f6a0-73b9-4f14-9d3e-63b2145a0008` lets an explicitly authenticated user
-supply the target WPA2/WPA3-personal network in the App and open one maintenance
-window. This is runtime configuration, not the old `config.ini` flasher.
-Only RAM is used: no Wi-Fi password is read from the host or old config,
-no credentials are migrated or saved to NVS, and legacy UDP control never starts.
-The App labels this as **only this maintenance window**. Credentials must be
-entered in the App, never sent in chat. Persistent provisioning and network scans
-are outside this minimal implementation.
+Normal control remains BLE. Networking starts only from an explicit, secure bonded
+maintenance OPEN. This local implementation is unsigned and uninstalled; the
+previous reviewed 0.2.7 artifact stays frozen and separate.
 
-Motion is stopped and confirmed before networking. STA reuses the existing
-`connect_wifi.cpp` ESP-IDF initialization/event model through a separate owned
-maintenance lifecycle: RAM driver config, real GOT_IP, at most two reconnects
-before initial readiness, no reconnect after an established link is lost,
-and complete handler/netif/driver cleanup. Connection is bounded to 20 seconds;
-the overall 120-second window includes that time. Closing while Opening is queued
-behind this bounded connection step, so the client waits up to 26 seconds and
-keeps control blocked until actual Closed. BLE reconnect/exit never restores
-old motion or automatic ARM. New control requires a fresh CLAIM and explicit ARM.
+## Network choice and compatibility
 
-## Wire contract
+- Schema 1 on characteristic 0008 configures a temporary network; nothing is saved.
+- Schema 3 has the same credential-bearing OPEN layout and explicitly remembers
+  that network after obtaining IP. The App defaults its “记住此网络” checkbox off.
+  Reconfiguring and opting in replaces the remembered network; temporary use does
+  not overwrite it. Only device NVS namespace `maint_net`, single blob `network`,
+  is used; old config.ini/hotspot fields and compile-time credentials are never
+  imported. No SSID/password is returned in status or persisted by the App.
+- Schema 2 is a credential-free, exactly 12-byte OPEN using that remembered network.
+  Reuse never happens on boot, BLE connection or ordinary control, only user OPEN.
+- CLOSE remains schema 1, action 2, no credentials. Schema 2/3 cannot encode CLOSE.
 
-The normal control v1.2/DeviceInfo capabilities remain unchanged. Optional 0007
-is the unchanged explicit AP fallback; 0008 is separately discoverable.
+Optional secure characteristic `4d89f6a0-73b9-4f14-9d3e-63b2145a0009` reads four
+bytes: schema=1, flags=3 (remember+reuse), saved-present=0/1, reserved=0.
+DeviceInfo capability bits and control protocol 1.2 do not change, avoiding old
+App decoder rejection of bit 0x200. The new App hides new choices if this optional
+feature is absent or unreadable. Old firmware keeps its original expiry; the UI
+uses device remaining time instead of claiming ten minutes.
 
-0008 write: schema=1 at byte 0; action 1=configure-and-open-LAN or 2=close at 1;
-request_id LE32 at 2 (nonzero), window_id LE32 at 6 (zero for open, current
-nonzero for close); SSID byte length at 10, password byte length at 11; bytes at
-12. SSID is 1..32 bytes without NUL/control bytes; password is printable ASCII
-8..63 bytes. Open/WEP and 64-hex PSKs are deliberately rejected. Close is exactly
-12 bytes with zero lengths. App sends UTF-8 SSID with no normalization; Android
-requests/checks a suitable MTU before sending one complete GATT write.
+NVS is local persistent storage; this feature does not enable encryption. A save
+error is uncertain: the SDK may already have written its single blob before
+commit reports a failure. Clients refresh non-secret saved-present metadata and
+show uncertainty, rather than promise old-network rollback. Same-size corrupt
+blobs can report present; reuse validates schema, bounds and termination and
+fails closed. Temporary RAM copies are wiped on success and failure.
 
-0008 read: schema1/state0..6/result0..6/detail at bytes0..3; request_id/window_id/
-remaining_ms LE32 at4/8/12; current IPv4 network-order bytes16..19; token length
-at20; reserved zero21..23; token bytes at24. Detail0=none,1=invalid config,
-2=connection timeout,3=Wi-Fi failure,4=lost established link. Only Open/Uploading
-return a 32-character random hex window token and IP. No SSID/password is ever
-returned. Open means actual IP + registered HTTP listener, not GATT write ACK.
-Requests are correlated and cached; a reused ID with different credentials is
-Invalid (RAM-only SHA256 fingerprints), and duplicates do not extend the window.
-AP and LAN share one active maintenance gate and cannot close each other.
+## Window lifecycle
+
+Both LAN and AP maintenance have a ten-minute idle deadline from explicit OPEN,
+including the bounded initial connection. Public GETs, reads, duplicate requests
+and reconnections do not extend it. Once an authorized POST starts, a separate
+120-second total upload deadline applies; crossing the original idle deadline
+does not abort that upload. Flag/timestamp/clock reads have an explicit order.
+Window status reports the current phase deadline.
+
+Motion stops before networking. STA connection has a 20-second bound, at most
+two retries before readiness, and no reconnect after established Wi-Fi loss.
+BLE authorization and the original connection epoch must remain valid throughout;
+BLE loss, Wi-Fi loss, errors or deadlines stop the window and clean owned resources.
+The user may explicitly close; a committed image cannot be falsely cancelled.
+Exit never restores old motion or ARM. “结束拍摄” reminds the user to switch off
+physical power: software pause/disconnect does not cut servo or board power.
+
+## Wire details
+
+0008 action 1=OPEN, 2=CLOSE at byte1; request_id LE32 at2 nonzero, window_id LE32
+at6 zero for OPEN/current for CLOSE; SSID/password lengths at10/11, data at12.
+SSID: 1–32 bytes without controls/NUL. Password: 8–63 printable ASCII, personal
+2.4GHz WPA2 network. Schema2 requires zero lengths and no payload.
+
+Read remains schema1/state0..6/result0..6/detail0..6; IDs/remaining_ms at4/8/12,
+IPv4 at16..19, token length at20, reserved zeros21..23, token at24. Details:
+0 none, 1 config, 2 connection timeout, 3 Wi-Fi failure, 4 link lost, 5 no usable
+remembered network, 6 saving unconfirmed. Only Open/Uploading expose IP and
+32-character random hex bearer to the authorized BLE client. No credentials.
+Schema participates in RAM replay fingerprints; same request ID with changed
+schema/credentials is rejected, not another save/open.
 
 ## Upload from the computer
 
@@ -64,11 +84,11 @@ AP and LAN share one active maintenance gate and cannot close each other.
    It sends exactly one bounded POST. A lost response means unknown, not a reason
    to upload again. AP requires an explicit `--ap-fallback` instead of LAN token.
 5. A 200 response means image committed for restart. Reconnect and verify the
-   actual higher firmware version and VALID startup before crediting an upgrade.
+   actual installed firmware version and VALID startup before crediting an upgrade.
 
 The LAN server requires `X-Satori-Window` in constant-time comparison, scoped to
 this RAM window. The IP URL contains no code. The existing manifest, size,
-board/chip, higher-version, SHA, SDK RSA verification, inactive-slot-only write,
+board/chip, descriptor-version consistency, SHA, SDK RSA verification, inactive-slot-only write,
 commit mutex and boot rollback remain the same. Ordinary trusted-LAN HTTP is
 not TLS and this prototype does not claim credential confidentiality from a
 hostile LAN observer. AP uses its one-window WPA2 credentials as before.
@@ -81,14 +101,35 @@ sink tests remain required, alongside Flutter protocol/session/UI tests and all
 four firmware profiles. Actual Wi-Fi/DHCP/HTTP/expiry are still hardware
 acceptance items, not proven by these local tests.
 
-The installed signed 0.2.5 has AP OTA but **no 0008/LAN provisioning**. The App
-shows unsupported for that firmware, rather than sending credentials or claiming
-it is configured. First deployment of LAN support therefore needs a separately
-authorized initial update through the existing AP or protected app-only USB
-route; subsequent updates are computer-to-device on LAN.
+The most recently verified installed baseline is normal 0.2.6: it supports LAN
+but remains temporary-only with its original short deadline. New 0.2.8 behavior
+has not been signed or deployed. App merging, phone installation and real-device
+acceptance are deferred by the user.
 
-This phase does not authorize firmware flashing, signing a release, phone
-installation, network changes or reuse of stored Wi-Fi secrets. Actual validation
-needs explicit approval of the target network and initial support-firmware
-deployment. Users enter the password in the App. The current satori default
-network is unchanged; no new device connection is part of these tests.
+Desktop `lan-desktop-provision.py --terminal --remember-network` explicitly saves
+LKl on supported 0.2.8; `--terminal --saved-network` reuses it without asking for
+its password. Both require personal CONNECT and keep the authorization code
+private unless the user explicitly requests SHOW. The one-shot upload workflow verifies package metadata and the established
+public-key signature before password entry; it accepts any valid application
+version and can be combined with these flags. It requires one ordinary local
+INSTALL confirmation, not a special same-version/downgrade confirmation. No permanent service or listener is added.
+
+This local phase performs no signing, deployment, phone installation, network
+configuration, or access to real stored credentials. Users must personally enter
+and submit credentials when eventual hardware acceptance is authorized.
+
+## Application version policy
+
+Application versions are metadata, not an ordering or duplicate-package gate.
+Same-version images (identical or different bytes), lower versions and higher
+versions follow the same installation path. Versions must still be three numeric
+components (0..65535, no leading zeros), and the manifest version must match the
+stored ESP-IDF descriptor. Signature, board/chip, SHA including Flash readback,
+project_name, secure_version equality, current VALID slot and inactive-target
+checks remain. A previous committed window cannot be reused: each intentional
+installation requires a fresh explicit maintenance window.
+
+App compatibility remains firmware 0.2.x, protocol1.2 and required capabilities;
+patch releases may differ. Current local configs do not enable SDK application
+anti-rollback; no eFuse state was read or modified. Secure-version equality is
+independent of application version ordering and is intentionally unchanged.

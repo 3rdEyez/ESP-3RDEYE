@@ -46,9 +46,10 @@ bool IdfOtaSink::Begin(const Manifest& m) {
         running_->address==update_->address||m.target_slot!=update_slot()||
         m.board!="satori_c3_v1"||m.chip!="esp32c3"||!ManifestValid(manifest_)||
         m.image_size!=manifest_.image_size||m.sha256!=manifest_.sha256) return false;
-    std::array<unsigned,3> offered{},current{};
-    const auto* desc=esp_app_get_description();
-    if (!ParseVersion(manifest_.version,offered)||!ParseVersion(desc->version,current)||offered<=current) return false;
+    // Version is metadata, not an ordering gate: same-version and downgrade
+    // images still pass all board/signature/integrity/slot checks below.
+    std::array<unsigned,3> offered{};
+    if (!ParseVersion(manifest_.version,offered)) return false;
     if (mbedtls_sha256_starts(&hash_,0)!=0) return false;
     const auto rc=esp_ota_begin(update_,manifest_.image_size,&handle_);
     active_=rc==ESP_OK;return active_;

@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import struct
+import json
 import unittest
 
 spec=importlib.util.spec_from_file_location('ota_package',Path(__file__).resolve().parents[1]/'tools/ota_package.py')
@@ -17,6 +18,10 @@ class PackageTests(unittest.TestCase):
         blob,meta=model.encode_package(fixture(),'esp-idf-sbv2-rsa3072')
         self.assertEqual(model.decode_package(blob),(fixture(),meta))
         self.assertNotIn('signature_verified',meta) # never inferred from fields
+    def test_declared_version_must_match_image_descriptor(self):
+        image=fixture();_,meta=model.encode_package(image,'esp-idf-sbv2-rsa3072');meta['version']='0.2.4'
+        header=json.dumps(meta,separators=(',',':')).encode();blob=struct.pack('<I',len(header))+header+image
+        with self.assertRaises(ValueError):model.decode_package(blob)
     def test_wrong_board_chip_version_or_size(self):
         for address,value in [(0,0),(12,4),(288,0),(48,10)]:
             image=bytearray(fixture());image[address]=value

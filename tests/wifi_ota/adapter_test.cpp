@@ -116,6 +116,19 @@ int main() {
     return 0;
 #else
     Reset(); assert(OfficialSignaturePolicyReady());
+    // Same version/different bytes, identical package twice, downgrade and upgrade.
+    for(unsigned scenario=0;scenario<5;++scenario){
+        Reset();std::strcpy(current_desc.version,"0.2.5");auto image=Image();
+        if(scenario==0)image[0]^=1;
+        auto manifest=ImageMetadata(image);
+        manifest.version=scenario==3?"0.2.4":scenario==4?"0.2.6":"0.2.5";
+        std::strcpy(offered_desc.version,manifest.version.c_str());
+        IdfOtaSink sink(manifest);assert(sink.Begin(Core(manifest)));
+        assert(sink.Write(image.data(),image.size()));
+        assert(sink.FinishVerifyAuthenticity()==Verification::Verified);
+        assert(sink.SetBootTarget(Slot::Ota1));assert(begins==1&&ends==1&&selections==1);
+    }
+
     for (unsigned failure = 0; failure < 21; ++failure) {
         Reset(); const auto image = Image(); auto signed_manifest = ImageMetadata(image); auto core = Core(signed_manifest);
         
@@ -132,15 +145,15 @@ int main() {
         case 9: core.chip = "esp32s3"; break;
         case 10: ++core.image_size; break;
         case 11: ++core.sha256[0]; break;
-        case 12: signed_manifest.version = "0.2.4"; break;
-        case 13: signed_manifest.version = "0.2.3"; break;
+        case 12: signed_manifest.version = "0.2"; break;
+        case 13: signed_manifest.version = "0.2.3-rc1"; break;
         case 14: sha_start_rc = -1; break;
         case 15: key_count = 2; break;
         case 16: signed_manifest.image_size = 0; core = Core(signed_manifest); break;
         case 17: signed_manifest.image_size = kSlotSize + 1; core = Core(signed_manifest); break;
         case 18: next_part.subtype = ESP_PARTITION_SUBTYPE_OTHER; break;
         case 19: run_part.address = 0x20000; break;
-        case 20: std::memset(current_desc.version, 'x', sizeof(current_desc.version)); break;
+        case 20: signed_manifest.version = "00.2.5"; break;
         }
         IdfOtaSink sink(signed_manifest);
         assert(!sink.Begin(core) && begins == 0 && selections == 0);
