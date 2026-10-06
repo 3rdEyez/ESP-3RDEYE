@@ -78,7 +78,6 @@ void UdpServer::StartListening()
         ESP_LOGI(TAG, "Received %d bytes from %s:", len, addr_str);
         m_rxBuff[std::min(RX_BUF_SIZE - 1, len)] = 0; // Null-terminate whatever we received and treat like a string...
         std::string message = m_dataProc->ProcessMessage(m_rxBuff);
-        message = "SatoriEye_DISCOVERY_RESPONSE,50";
         int err = sendto(m_sock, message.c_str(), message.length(), 0, (struct sockaddr *)&source_addr, sizeof(source_addr));
         if (err < 0) {
             ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);

@@ -1,0 +1,624 @@
+{
+  "schema_version": 1,
+  "protocol": "SatoriEye BLE Control v1.0 draft",
+  "date": "2026-09-29",
+  "warning": "SYNTHETIC SOFTWARE TEST FIXTURES ONLY. Not calibration, not device credentials, not permission to move real hardware. Test result definitions are design requirements, not results already passed by firmware/App.",
+  "byte_order": "little-endian for multibyte integers; DeviceIdentity is an opaque byte string",
+  "frame_size": 20,
+  "service_uuid": "4d89f6a0-73b9-4f14-9d3e-63b2145a0000",
+  "commands": [
+    {
+      "name": "claim_seq1",
+      "hex": "0101010000000000000000000000000000000000",
+      "decoded": {
+        "version": 1,
+        "opcode": 1,
+        "operation": "CLAIM",
+        "sequence": 1,
+        "session_token": 0,
+        "payload": {
+          "reserved_hex": "00000000000000000000"
+        }
+      }
+    },
+    {
+      "name": "arm_seq2",
+      "hex": "0107020000007856341200000000000000000000",
+      "decoded": {
+        "version": 1,
+        "opcode": 7,
+        "operation": "ARM",
+        "sequence": 2,
+        "session_token": 305419896,
+        "payload": {
+          "reserved_hex": "00000000000000000000"
+        }
+      }
+    },
+    {
+      "name": "set_seq3_synthetic_targets",
+      "hex": "01020300000078563412dc054006a406c8000000",
+      "decoded": {
+        "version": 1,
+        "opcode": 2,
+        "operation": "SET_TARGET",
+        "sequence": 3,
+        "session_token": 305419896,
+        "payload": {
+          "channels": [
+            1500,
+            1600,
+            1700
+          ],
+          "transition_ms": 200,
+          "reserved": 0
+        }
+      }
+    },
+    {
+      "name": "keepalive_seq4",
+      "hex": "0105040000007856341200000000000000000000",
+      "decoded": {
+        "version": 1,
+        "opcode": 5,
+        "operation": "KEEPALIVE",
+        "sequence": 4,
+        "session_token": 305419896,
+        "payload": {
+          "reserved_hex": "00000000000000000000"
+        }
+      }
+    },
+    {
+      "name": "halt_seq5",
+      "hex": "0103050000007856341200000000000000000000",
+      "decoded": {
+        "version": 1,
+        "opcode": 3,
+        "operation": "HALT",
+        "sequence": 5,
+        "session_token": 305419896,
+        "payload": {
+          "reserved_hex": "00000000000000000000"
+        }
+      }
+    },
+    {
+      "name": "get_status_seq6",
+      "hex": "0106060000007856341200000000000000000000",
+      "decoded": {
+        "version": 1,
+        "opcode": 6,
+        "operation": "GET_STATUS",
+        "sequence": 6,
+        "session_token": 305419896,
+        "payload": {
+          "reserved_hex": "00000000000000000000"
+        }
+      }
+    },
+    {
+      "name": "release_seq7",
+      "hex": "0104070000007856341200000000000000000000",
+      "decoded": {
+        "version": 1,
+        "opcode": 4,
+        "operation": "RELEASE",
+        "sequence": 7,
+        "session_token": 305419896,
+        "payload": {
+          "reserved_hex": "00000000000000000000"
+        }
+      }
+    },
+    {
+      "name": "set_large_sequence_no_16bit_wrap",
+      "hex": "01020100010078563412dc054006a406c8000000",
+      "decoded": {
+        "version": 1,
+        "opcode": 2,
+        "operation": "SET_TARGET",
+        "sequence": 65537,
+        "session_token": 305419896,
+        "payload": {
+          "channels": [
+            1500,
+            1600,
+            1700
+          ],
+          "transition_ms": 200,
+          "reserved": 0
+        }
+      }
+    }
+  ],
+  "events": [
+    {
+      "name": "claim_reply_unarmed",
+      "hex": "018101000000785634120001000000000cff0000",
+      "decoded": {
+        "version": 1,
+        "opcode": 129,
+        "sequence": 1,
+        "session_token": 305419896,
+        "result": 0,
+        "control_state": 1,
+        "last_applied_sequence": 0,
+        "flags": 12,
+        "battery_percent": null,
+        "reserved": 0
+      }
+    },
+    {
+      "name": "arm_reply_initialized_not_physical_arrival",
+      "hex": "018702000000785634120001020000000dff0000",
+      "decoded": {
+        "version": 1,
+        "opcode": 135,
+        "sequence": 2,
+        "session_token": 305419896,
+        "result": 0,
+        "control_state": 1,
+        "last_applied_sequence": 2,
+        "flags": 13,
+        "battery_percent": null,
+        "reserved": 0
+      }
+    },
+    {
+      "name": "target_accepted_before_motion_task",
+      "hex": "018203000000785634120001020000000dff0000",
+      "decoded": {
+        "version": 1,
+        "opcode": 130,
+        "sequence": 3,
+        "session_token": 305419896,
+        "result": 0,
+        "control_state": 1,
+        "last_applied_sequence": 2,
+        "flags": 13,
+        "battery_percent": null,
+        "reserved": 0
+      }
+    },
+    {
+      "name": "async_interpolating",
+      "hex": "01e000000000785634120002030000000fff0000",
+      "decoded": {
+        "version": 1,
+        "opcode": 224,
+        "sequence": 0,
+        "session_token": 305419896,
+        "result": 0,
+        "control_state": 2,
+        "last_applied_sequence": 3,
+        "flags": 15,
+        "battery_percent": null,
+        "reserved": 0
+      }
+    },
+    {
+      "name": "halt_reply",
+      "hex": "018305000000785634120001050000000dff0000",
+      "decoded": {
+        "version": 1,
+        "opcode": 131,
+        "sequence": 5,
+        "session_token": 305419896,
+        "result": 0,
+        "control_state": 1,
+        "last_applied_sequence": 5,
+        "flags": 13,
+        "battery_percent": null,
+        "reserved": 0
+      }
+    },
+    {
+      "name": "release_reply_correlated_old_token",
+      "hex": "0184070000007856341200000700000005ff0000",
+      "decoded": {
+        "version": 1,
+        "opcode": 132,
+        "sequence": 7,
+        "session_token": 305419896,
+        "result": 0,
+        "control_state": 0,
+        "last_applied_sequence": 7,
+        "flags": 5,
+        "battery_percent": null,
+        "reserved": 0
+      }
+    },
+    {
+      "name": "set_before_arm_error",
+      "hex": "018203000000785634120b01000000000cff0000",
+      "decoded": {
+        "version": 1,
+        "opcode": 130,
+        "sequence": 3,
+        "session_token": 305419896,
+        "result": 11,
+        "control_state": 1,
+        "last_applied_sequence": 0,
+        "flags": 12,
+        "battery_percent": null,
+        "reserved": 0
+      }
+    },
+    {
+      "name": "missing_verified_startup_error",
+      "hex": "018702000000785634120c01000000000cff0000",
+      "decoded": {
+        "version": 1,
+        "opcode": 135,
+        "sequence": 2,
+        "session_token": 305419896,
+        "result": 12,
+        "control_state": 1,
+        "last_applied_sequence": 0,
+        "flags": 12,
+        "battery_percent": null,
+        "reserved": 0
+      }
+    }
+  ],
+  "reads": [
+    {
+      "name": "device_info_synthetic_firmware_0_1_0",
+      "characteristic": "DeviceInfo",
+      "hex": "0100000100015f0000001414d007701701030000",
+      "decoded": {
+        "protocol_major": 1,
+        "protocol_minor": 0,
+        "firmware_version": [
+          0,
+          1,
+          0
+        ],
+        "hardware_profile": 1,
+        "capabilities": 95,
+        "recommended_target_hz": 20,
+        "max_target_hz": 20,
+        "max_transition_ms": 2000,
+        "lease_timeout_ms": 6000,
+        "security_policy": 1,
+        "logical_channels": 3,
+        "reserved": 0
+      }
+    },
+    {
+      "name": "identity_synthetic_not_a_real_device",
+      "characteristic": "DeviceIdentity",
+      "hex": "00112233445566778899aabbccddeeff",
+      "decoded": {
+        "opaque_id_hex": "00112233445566778899aabbccddeeff"
+      }
+    },
+    {
+      "name": "snapshot_cold_unarmed",
+      "characteristic": "StateSnapshot",
+      "hex": "010000000000000000000000000000000000ff00",
+      "decoded": {
+        "version": 1,
+        "control_state": 0,
+        "session_token": 0,
+        "last_applied_sequence": 0,
+        "last_commanded_channels": [
+          0,
+          0,
+          0
+        ],
+        "valid_channel_mask": 0,
+        "interpolating_channel_mask": 0,
+        "battery_percent": null,
+        "reserved": 0
+      }
+    },
+    {
+      "name": "snapshot_synthetic_after_arm",
+      "characteristic": "StateSnapshot",
+      "hex": "01017856341202000000b405fa0572060700ff00",
+      "decoded": {
+        "version": 1,
+        "control_state": 1,
+        "session_token": 305419896,
+        "last_applied_sequence": 2,
+        "last_commanded_channels": [
+          1460,
+          1530,
+          1650
+        ],
+        "valid_channel_mask": 7,
+        "interpolating_channel_mask": 0,
+        "battery_percent": null,
+        "reserved": 0
+      }
+    },
+    {
+      "name": "snapshot_synthetic_interpolating",
+      "characteristic": "StateSnapshot",
+      "hex": "01027856341203000000c805180690060707ff00",
+      "decoded": {
+        "version": 1,
+        "control_state": 2,
+        "session_token": 305419896,
+        "last_applied_sequence": 3,
+        "last_commanded_channels": [
+          1480,
+          1560,
+          1680
+        ],
+        "valid_channel_mask": 7,
+        "interpolating_channel_mask": 7,
+        "battery_percent": null,
+        "reserved": 0
+      }
+    }
+  ],
+  "rejection_cases": [
+    {
+      "name": "length_19",
+      "hex": "01020300000078563412dc054006a406c80000",
+      "expected": "BAD_LENGTH_OR_ATT_INVALID_ATTRIBUTE_VALUE_LENGTH",
+      "rejection_layer": "att",
+      "precondition": "encrypted_authenticated_bonded_claimed_armed_with_no_newer_accepted_sequence"
+    },
+    {
+      "name": "length_21",
+      "hex": "01020300000078563412dc054006a406c800000000",
+      "expected": "BAD_LENGTH_OR_ATT_INVALID_ATTRIBUTE_VALUE_LENGTH",
+      "rejection_layer": "att",
+      "precondition": "encrypted_authenticated_bonded_claimed_armed_with_no_newer_accepted_sequence"
+    },
+    {
+      "name": "version_2",
+      "hex": "02020300000078563412dc054006a406c8000000",
+      "expected": "BAD_VERSION",
+      "rejection_layer": "business_or_att",
+      "precondition": "encrypted_authenticated_bonded_claimed_armed_with_no_newer_accepted_sequence"
+    },
+    {
+      "name": "unknown_opcode",
+      "hex": "017f030000007856341200000000000000000000",
+      "expected": "BAD_OPCODE",
+      "rejection_layer": "business_or_att",
+      "precondition": "encrypted_authenticated_bonded_claimed_armed_with_no_newer_accepted_sequence"
+    },
+    {
+      "name": "ch1_below_500",
+      "hex": "01020300000078563412f3014006a406c8000000",
+      "expected": "BAD_PAYLOAD",
+      "rejection_layer": "business_or_att",
+      "precondition": "encrypted_authenticated_bonded_claimed_armed_with_no_newer_accepted_sequence"
+    },
+    {
+      "name": "ch3_above_2500",
+      "hex": "01020300000078563412dc054006c509c8000000",
+      "expected": "BAD_PAYLOAD",
+      "rejection_layer": "business_or_att",
+      "precondition": "encrypted_authenticated_bonded_claimed_armed_with_no_newer_accepted_sequence"
+    },
+    {
+      "name": "transition_above_capability",
+      "hex": "01020300000078563412dc054006a406d1070000",
+      "expected": "BAD_PAYLOAD",
+      "rejection_layer": "business_or_att",
+      "precondition": "encrypted_authenticated_bonded_claimed_armed_with_no_newer_accepted_sequence"
+    },
+    {
+      "name": "set_reserved_nonzero",
+      "hex": "01020300000078563412dc054006a406c8000100",
+      "expected": "BAD_PAYLOAD",
+      "rejection_layer": "business_or_att",
+      "precondition": "encrypted_authenticated_bonded_claimed_armed_with_no_newer_accepted_sequence"
+    },
+    {
+      "name": "halt_payload_nonzero",
+      "hex": "0103050000007856341201000000000000000000",
+      "expected": "BAD_PAYLOAD",
+      "rejection_layer": "business_or_att",
+      "precondition": "encrypted_authenticated_bonded_claimed_armed_with_no_newer_accepted_sequence"
+    },
+    {
+      "name": "sequence_zero",
+      "hex": "01020000000078563412dc054006a406c8000000",
+      "expected": "OLD_SEQUENCE",
+      "rejection_layer": "business_or_att",
+      "precondition": "encrypted_authenticated_bonded_claimed_armed_with_no_newer_accepted_sequence"
+    },
+    {
+      "name": "wrong_token",
+      "hex": "01020300000099999999dc054006a406c8000000",
+      "expected": "BAD_SESSION",
+      "rejection_layer": "business_or_att",
+      "precondition": "encrypted_authenticated_bonded_claimed_armed_with_no_newer_accepted_sequence"
+    },
+    {
+      "name": "set_not_armed",
+      "hex": "01020300000078563412dc054006a406c8000000",
+      "expected": "NOT_ARMED",
+      "rejection_layer": "business_or_att",
+      "precondition": "encrypted_authenticated_bonded_claimed_but_never_armed"
+    },
+    {
+      "name": "unauthenticated_control",
+      "hex": "01020300000078563412dc054006a406c8000000",
+      "expected": "ATT_AUTHENTICATION_OR_ENCRYPTION_ERROR",
+      "rejection_layer": "att",
+      "precondition": "not_encrypted_or_not_authenticated"
+    },
+    {
+      "name": "unsubscribed_claim",
+      "hex": "0101010000000000000000000000000000000000",
+      "expected": "SUBSCRIPTION_REQUIRED",
+      "rejection_layer": "business_or_att",
+      "precondition": "encrypted_authenticated_bonded_no_session_no_event_subscription"
+    }
+  ],
+  "state_machine_scenarios": [
+    {
+      "name": "duplicate_target_idempotent",
+      "steps": [
+        "valid_claim",
+        "valid_arm",
+        "set_seq3_synthetic_targets",
+        "set_seq3_synthetic_targets"
+      ],
+      "expect": [
+        "one_target_submission",
+        "same_cached_reply_for_duplicate",
+        "duplicate_does_not_extend_lease"
+      ]
+    },
+    {
+      "name": "same_sequence_different_content",
+      "steps": [
+        "valid_claim",
+        "valid_arm",
+        "set_seq3_synthetic_targets",
+        {
+          "hex": "01020300000078563412dd054006a406c8000000"
+        }
+      ],
+      "expect": [
+        "SEQ_CONFLICT",
+        "no_second_execution"
+      ]
+    },
+    {
+      "name": "lost_claim_ack",
+      "steps": [
+        "claim_seq1",
+        "drop_claim_reply",
+        "claim_seq1"
+      ],
+      "expect": [
+        "same_token_returned",
+        "one_claim_allocation"
+      ]
+    },
+    {
+      "name": "late_target_after_halt",
+      "steps": [
+        "valid_claim",
+        "valid_arm",
+        "enqueue_set_seq3",
+        "halt_seq5",
+        "run_stale_set_callback"
+      ],
+      "expect": [
+        "internal_generation_rejects_stale_callback",
+        "output_held",
+        "no_post_halt_motion_from_stale_work"
+      ]
+    },
+    {
+      "name": "lease_expiration",
+      "steps": [
+        "valid_claim",
+        "valid_arm",
+        "no_new_valid_control_or_heartbeat_for_6000ms",
+        "run_next_control_tick"
+      ],
+      "expect": [
+        "cancel_interpolation",
+        "hold_last_issued_output",
+        "revoke_session",
+        "disconnect_ble",
+        "no_auto_replay_after_reconnect"
+      ]
+    },
+    {
+      "name": "invalid_traffic_not_keepalive",
+      "steps": [
+        "valid_claim",
+        "valid_arm",
+        "repeated_malformed_frames_for_6000ms",
+        "run_next_control_tick"
+      ],
+      "expect": [
+        "lease_expires",
+        "invalid_frames_do_not_change_output"
+      ]
+    },
+    {
+      "name": "release_cannot_resurrect_claim",
+      "steps": [
+        "valid_claim",
+        "valid_arm",
+        "release_seq7",
+        "replay_old_claim_during_grace"
+      ],
+      "expect": [
+        "BAD_SESSION",
+        "no_new_token",
+        "hold_output",
+        "eventual_disconnect"
+      ]
+    },
+    {
+      "name": "missing_startup_configuration",
+      "steps": [
+        "valid_claim",
+        "arm_seq2"
+      ],
+      "precondition": "no_verified_board_startup_vector",
+      "expect": [
+        "NOT_CONFIGURED",
+        "output_valid_mask_zero",
+        "PWM_remains_disabled"
+      ]
+    },
+    {
+      "name": "cold_claim_does_not_move",
+      "steps": [
+        "boot",
+        "complete_secure_pairing",
+        "claim_seq1"
+      ],
+      "expect": [
+        "no_PWM_activation",
+        "output_valid_mask_zero"
+      ]
+    },
+    {
+      "name": "app_ui_recreation",
+      "steps": [
+        "active_session_and_auto_mode",
+        "destroy_ui_activity",
+        "recreate_ui_activity",
+        "request_runtime_snapshot"
+      ],
+      "expect": [
+        "same_runtime_id",
+        "one_ble_connection",
+        "one_control_engine",
+        "no_replay_or_second_auto_timer"
+      ]
+    },
+    {
+      "name": "seq_u32_not_u16",
+      "steps": [
+        "accepted_sequence_65535",
+        "accepted_sequence_65536",
+        "set_large_sequence_no_16bit_wrap"
+      ],
+      "expect": [
+        "monotonic_u32_handling",
+        "no_16bit_wrap"
+      ]
+    },
+    {
+      "name": "old_frame_after_cache_eviction",
+      "steps": [
+        "accepted_set_seq3",
+        "accept_more_than_16_later_commands",
+        "replay_seq3"
+      ],
+      "expect": [
+        "OLD_SEQUENCE",
+        "no_reexecution"
+      ]
+    }
+  ]
+}

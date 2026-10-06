@@ -11,6 +11,8 @@
 
 class EspPartitionParam {
 public:
+    bool IsValid() const { return valid_; }
+    bool HasParam(const std::string &key) const { return params.find(key) != params.end(); }
     static EspPartitionParam &GetInstance(); // Singleton
     int GetIntParam(const std::string &key, int defaultValue);
     float GetFloatParam(const std::string &key, float defaultValue);
@@ -20,6 +22,7 @@ public:
 private:
     EspPartitionParam(const std::string &partitionName);
     std::map<std::string, std::string> params;
+    bool valid_ = true;
 };
 
 #endif // ESP_PARTITION_PARAM_H

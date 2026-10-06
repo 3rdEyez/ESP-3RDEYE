@@ -28,6 +28,17 @@ struct ServoDataConfig {
 };
 
 
+// Shared by both output profiles and host mechanical regression tests.
+// Preserve the historical order: reversal, scale about zero, offset, clamp.
+inline float CalibratedServoAngle(float theta, const ServoDataConfig& config) {
+    theta = config.isReverse ? 180.0f - theta : theta;
+    theta = (theta - config.zeroPoint) * config.scale + config.zeroPoint - config.offset;
+    if (theta > config.maxAngle) return config.maxAngle;
+    if (theta < config.minAngle) return config.minAngle;
+    return theta;
+}
+
+
 class ServoInputAdapter {
 public:
     inline float PulseWidth2Angle(int pulseWidth)

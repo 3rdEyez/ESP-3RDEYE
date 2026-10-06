@@ -1,6 +1,7 @@
 #include "servo_group.h"
 #include <thread>
 #include <chrono>
+#include <cmath>
 
 #include "driver/ledc.h"
 #include "esp_log.h"
@@ -97,7 +98,7 @@ ServoGroup::ServoGroup()
     // Prepare and then apply the LEDC PWM timer configuration
     const std::array<int, SERVO_NUM> &gpio_array=g_ServoPwmGpios;
     
-    ledc_timer_config_t ledc_timer;
+    ledc_timer_config_t ledc_timer{};
 
     ledc_timer.speed_mode = LEDC_MODE;
     ledc_timer.duty_resolution = LEDC_DUTY_RES;
@@ -106,9 +107,12 @@ ServoGroup::ServoGroup()
     ledc_timer.clk_cfg = LEDC_AUTO_CLK;
     ledc_timer.deconfigure = false;
 
-    ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
+    if (ledc_timer_config(&ledc_timer) != ESP_OK) {
+        ESP_LOGE(TAG, "PWM timer initialization failed");
+        return;
+    }
     
-    ledc_channel_config_t ledc_channel;
+    ledc_channel_config_t ledc_channel{};
     ledc_channel.speed_mode     = LEDC_MODE;
     ledc_channel.timer_sel      = LEDC_TIMER;
     ledc_channel.intr_type      = LEDC_INTR_DISABLE;
@@ -117,18 +121,28 @@ ServoGroup::ServoGroup()
 
     ledc_channel.gpio_num = gpio_array[SERVO_IDX_CH1];
     ledc_channel.channel = static_cast<ledc_channel_t>(SERVO_IDX_CH1);
-    ledc_channel_config(&ledc_channel);
+    if (ledc_channel_config(&ledc_channel) != ESP_OK) {
+        ESP_LOGE(TAG, "PWM channel initialization failed");
+        return;
+    }
     SetServoDataPreprocessor(SERVO_IDX_CH1, g_ServoConfigCH1);
 
     ledc_channel.gpio_num = gpio_array[SERVO_IDX_CH2];
     ledc_channel.channel = static_cast<ledc_channel_t>(SERVO_IDX_CH2);
-    ledc_channel_config(&ledc_channel);
+    if (ledc_channel_config(&ledc_channel) != ESP_OK) {
+        ESP_LOGE(TAG, "PWM channel initialization failed");
+        return;
+    }
     SetServoDataPreprocessor(SERVO_IDX_CH2, g_ServoConfigCH2);
 
     ledc_channel.gpio_num = gpio_array[SERVO_IDX_CH3];
     ledc_channel.channel = static_cast<ledc_channel_t>(SERVO_IDX_CH3);
-    ledc_channel_config(&ledc_channel);
+    if (ledc_channel_config(&ledc_channel) != ESP_OK) {
+        ESP_LOGE(TAG, "PWM channel initialization failed");
+        return;
+    }
     SetServoDataPreprocessor(SERVO_IDX_CH3, g_ServoConfigCH3);
+    ready_ = true;
 }
 
 /**
@@ -137,32 +151,23 @@ ServoGroup::ServoGroup()
  * @param servoIdx 舵机索引
  * @param theta 舵机角度
  */
-void ServoGroup::SetAngle(int servoIdx, float theta)
+bool ServoGroup::SetAngle(int servoIdx, float theta)
 {
-    if (servoIdx < 0 || servoIdx >= SERVO_NUM) {
-        ESP_LOGE(TAG, "servoIdx out of range");
-        return;
+    if (!ready_ || !std::isfinite(theta) || servoIdx < 0 || servoIdx >= SERVO_NUM) {
+        ESP_LOGE(TAG, "PWM output unavailable or invalid input");
+        return false;
     }
-    float scale = m_servoDataPreprocessorMap[servoIdx].scale;
-    float offset = m_servoDataPreprocessorMap[servoIdx].offset;
-    float zeroPoint = m_servoDataPreprocessorMap[servoIdx].zeroPoint;
-    float minAngle = m_servoDataPreprocessorMap[servoIdx].minAngle;
-    float maxAngle = m_servoDataPreprocessorMap[servoIdx].maxAngle;
-    bool isReverse = m_servoDataPreprocessorMap[servoIdx].isReverse;
-
-    theta = isReverse ? 180 - theta : theta;
-    theta = (theta - zeroPoint) * scale + zeroPoint - offset;
-
-    if (theta > maxAngle) {
-        theta = maxAngle;
-    } else if (theta < minAngle) {
-        theta = minAngle;
-    }
+    theta = CalibratedServoAngle(theta, m_servoDataPreprocessorMap.at(servoIdx));
     float duty = (theta * 2.0 / 180.0 + 0.5) / 20.0; // 将角度转换为占空比;20.0代表20ms
     int pulse_width = (uint32_t)(duty * (float)(1 << LEDC_DUTY_RES));
     // ESP_LOGI(TAG, "servoIdx: %d, theta: %f, duty: %f, pulse_width: %d", servoIdx, theta, duty, pulse_width);
-    ledc_set_duty(LEDC_MODE, static_cast<ledc_channel_t>(servoIdx), pulse_width);
-    ledc_update_duty(LEDC_MODE, static_cast<ledc_channel_t>(servoIdx));
+    if (ledc_set_duty(LEDC_MODE, static_cast<ledc_channel_t>(servoIdx), pulse_width) != ESP_OK ||
+        ledc_update_duty(LEDC_MODE, static_cast<ledc_channel_t>(servoIdx)) != ESP_OK) {
+        ESP_LOGE(TAG, "PWM output update failed");
+        ready_ = false;
+        return false;
+    }
+    return true;
 }
 
 

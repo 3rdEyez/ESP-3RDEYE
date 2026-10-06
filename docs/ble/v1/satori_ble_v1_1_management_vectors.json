@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "protocol": "SatoriEye BLE v1.1 owner management",
+  "warning": "All codes are synthetic test inputs, never actual device secrets.",
+  "commands": [
+    {
+      "name": "set_pairing_code",
+      "opcode": 8,
+      "sequence": 2,
+      "token": 305419896,
+      "code": 654321,
+      "hex": "01080200000078563412f1fb0900000000000000"
+    },
+    {
+      "name": "set_leading_zero_code",
+      "opcode": 8,
+      "sequence": 3,
+      "token": 305419896,
+      "code": 42,
+      "hex": "010803000000785634122a000000000000000000"
+    },
+    {
+      "name": "open_transfer",
+      "opcode": 9,
+      "sequence": 4,
+      "token": 305419896,
+      "hex": "0109040000007856341200000000000000000000"
+    },
+    {
+      "name": "cancel_transfer",
+      "opcode": 10,
+      "sequence": 5,
+      "token": 305419896,
+      "hex": "010a050000007856341200000000000000000000"
+    }
+  ],
+  "rejection_cases": [
+    {
+      "name": "default_code_forbidden",
+      "expected_result": 4,
+      "hex": "0108020000007856341240e20100000000000000"
+    },
+    {
+      "name": "code_too_large",
+      "expected_result": 4,
+      "hex": "0108020000007856341240420f00000000000000"
+    },
+    {
+      "name": "code_reserved_nonzero",
+      "expected_result": 4,
+      "hex": "01080200000078563412f1fb0900010000000000"
+    },
+    {
+      "name": "open_reserved_nonzero",
+      "expected_result": 4,
+      "hex": "0109020000007856341201000000000000000000"
+    },
+    {
+      "name": "cancel_reserved_nonzero",
+      "expected_result": 4,
+      "hex": "010a020000007856341201000000000000000000"
+    },
+    {
+      "name": "wrong_token",
+      "expected_result": 6,
+      "hex": "01080200000001000000f1fb0900000000000000"
+    }
+  ],
+  "events": [
+    {
+      "name": "set_code_ok",
+      "hex": "018802000000785634120001000000000cff0000"
+    },
+    {
+      "name": "open_transfer_ok",
+      "hex": "018904000000785634120001040000000cff0000"
+    },
+    {
+      "name": "cancel_transfer_ok",
+      "hex": "018a05000000785634120001040000000cff0000"
+    }
+  ],
+  "scenarios": [
+    "empty_device_default_bootstrap",
+    "existing_identity_never_overwritten",
+    "partial_nvs_fails_closed",
+    "only_owner_changes_code",
+    "persist_failure_preserves_code",
+    "duplicate_set_does_not_rewrite",
+    "code_change_keeps_bond",
+    "default_code_cannot_open_transfer",
+    "open_halts_before_ack",
+    "retry_does_not_extend_window",
+    "stranger_denied_outside_window",
+    "timeout_retains_old_owner",
+    "reboot_closes_window",
+    "new_owner_commit_before_old_bond_delete",
+    "failed_commit_retains_old_owner",
+    "cancel_keeps_old_owner",
+    "new_phone_claim_stays_paused"
+  ]
+}
