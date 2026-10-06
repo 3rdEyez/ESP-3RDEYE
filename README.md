@@ -35,4 +35,4 @@ BLE 首次配对、连接和固件设置请参阅[固件设置与配对指南](d
 ## 相关资源
 
 - [「开源」机械觉之瞳视频](https://www.bilibili.com/video/BV1rN1gYJE3K)
-- [配套安卓 APP 项目](https://github.com/AkazaAkali)
+- [配套安卓 APP 项目](https://github.com/3rdEyez/SatoriManager)

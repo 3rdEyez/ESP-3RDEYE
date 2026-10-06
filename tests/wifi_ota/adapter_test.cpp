@@ -154,7 +154,7 @@ int main() {
 
     for (unsigned failure = 0; failure < 21; ++failure) {
         Reset(); const auto image = Image(); auto signed_manifest = ImageMetadata(image); auto core = Core(signed_manifest);
-        
+
         switch (failure) {
         case 0: policy_ok = false; break;
         case 1: key_count = 0; break;
@@ -185,7 +185,7 @@ int main() {
     for (unsigned failure = 0; failure < 12; ++failure) {
         Reset(); auto image = Image();
         if (failure == 5) image[kBoardTagImageOffset] ^= 1; // valid digest of wrong board tag
-        const auto signed_manifest = ImageMetadata(image); 
+        const auto signed_manifest = ImageMetadata(image);
         IdfOtaSink sink(signed_manifest); assert(sink.Begin(Core(signed_manifest)));
         if (failure == 0) image[0] ^= 1;
         assert(sink.Write(image.data(), image.size()));
@@ -211,13 +211,13 @@ int main() {
         sink.Abort(); sink.Abort(); assert(aborts == 1 && writes == 0 && selections == 0);
     }
     {
-        Reset(); const auto image = Image(); const auto manifest = ImageMetadata(image); 
+        Reset(); const auto image = Image(); const auto manifest = ImageMetadata(image);
         { IdfOtaSink sink(manifest); assert(sink.Begin(Core(manifest))); write_rc = -1;
           assert(!sink.Write(image.data(), image.size())); }
         assert(aborts == 1 && !live && selections == 0);
     }
     {
-        Reset(); const auto image = Image(); const auto manifest = ImageMetadata(image); 
+        Reset(); const auto image = Image(); const auto manifest = ImageMetadata(image);
         IdfOtaSink sink(manifest); assert(sink.Begin(Core(manifest)));
         assert(sink.Write(image.data(), 100) && sink.Write(image.data()+100, image.size()-100));
         assert(sink.FinishVerifyAuthenticity() == Verification::Verified && ends == 1 && !live);
@@ -226,7 +226,7 @@ int main() {
         sink.Abort(); assert(selections == 1 && aborts == 0);
     }
     {
-        Reset(); const auto image = Image(); const auto manifest = ImageMetadata(image); 
+        Reset(); const auto image = Image(); const auto manifest = ImageMetadata(image);
         IdfOtaSink sink(manifest); assert(sink.Begin(Core(manifest)));
         assert(sink.Write(image.data(), image.size()) && sink.FinishVerifyAuthenticity() == Verification::Verified);
         state = ESP_OTA_IMG_PENDING_VERIFY;
