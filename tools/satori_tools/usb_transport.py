@@ -4,6 +4,13 @@ from pathlib import Path
 from .runtime import Rejected,digest as sha
 FLASH=0x400000
 OTADATA=0x303000
+SUPPORTED_ROM_TOOLS = frozenset(('4.8.1', '4.12.0'))
+
+def require_rom_tool(version):
+    # Both audited SDK versions retain the no-stub C3 ROM API and 0x400 writer.
+    # Unknown versions still fail before opening the serial device.
+    if version not in SUPPORTED_ROM_TOOLS:
+        raise Rejected('Required ROM tool differs')
 
 def passive_guard(port,identity):
     node=os.stat(port)
@@ -56,7 +63,7 @@ class Rom:
         signal.alarm(max(1,min(seconds,int(remaining))))
     def open(self):
         import serial,esptool,esptool.loader
-        if esptool.__version__!='4.8.1':raise Rejected('Required ROM tool differs')
+        require_rom_tool(esptool.__version__)
         esptool.loader.WRITE_BLOCK_ATTEMPTS=1;passive_guard(self.port_name,self.usb_identity)
         self.port=serial.Serial(port=None,baudrate=115200,timeout=.25,write_timeout=2,exclusive=True);self.port.port=self.port_name;self.port.dtr=False;self.port.rts=False
         self.port.open();self.opened=True;self.enter()

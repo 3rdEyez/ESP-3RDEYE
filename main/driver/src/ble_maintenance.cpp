@@ -6,10 +6,33 @@
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "freertos/task.h"
+#include "services/gatt/ble_svc_gatt.h"
 #include <cstdio>
 #include <cstring>
 
 namespace satori::ble::internal {
+#if CONFIG_BT_NIMBLE_GATT_CACHING
+int GattStatusCommand(int, char**) {
+    if (!g_runtime.ble_started || !g_runtime.host_startup_ready) {
+        std::printf("GATT database is not ready.\n");
+        return 1;
+    }
+    const ble_uuid16_t uuid = BLE_UUID16_INIT(0x1801);
+    std::uint16_t service = 0;
+    std::uint8_t hash[16]{};
+    if (ble_gatts_find_svc(&uuid.u, &service) != 0 || ble_gatts_calculate_hash(hash) != 0) {
+        std::printf("GATT database validation failed.\n");
+        return 1;
+    }
+    // Database Hash is public GATT metadata; this command never reads identity,
+    // passkeys, owner records, BLE security keys or network settings.
+    std::printf("GATT status: service=%u changed=%u hash=%u database_hash=",
+        service, ble_svc_gatt_changed_handle(), ble_svc_gatt_hash_handle());
+    for (const auto byte : hash) std::printf("%02x", byte);
+    std::printf("\n");
+    return 0;
+}
+#endif
 int PairCardCommand(int, char**) {
     BleIdentityData identity{};
     PairingLock();
@@ -77,6 +100,10 @@ int RepairNvsCommand(int argc, char** argv) {
 }
 
 void RegisterUsbCommands() {
+#if CONFIG_BT_NIMBLE_GATT_CACHING
+    esp_console_cmd_t gatt{}; gatt.command = "ble-gatt-status"; gatt.help = "Read public GATT handles and Database Hash"; gatt.func = GattStatusCommand;
+    esp_console_cmd_register(&gatt);
+#endif
     esp_console_cmd_t provision{}; provision.command = "ble-provision"; provision.help = "Initialize a blank BLE identity with default code 123456"; provision.func = ProvisionCommand;
     esp_console_cmd_register(&provision);
     esp_console_cmd_t show{}; show.command = "ble-pair-card"; show.help = "Display the saved pairing card over this USB maintenance console"; show.func = PairCardCommand;

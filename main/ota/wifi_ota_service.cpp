@@ -16,6 +16,7 @@
 #include "esp_event.h"
 #include "esp_random.h"
 #include "esp_system.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -149,6 +150,7 @@ esp_err_t UploadBody(httpd_req_t* req) {
         }
         remaining-=static_cast<std::size_t>(count);
     }
+    ESP_LOGI("WIFI_OTA", "Received %u bytes; verifying stored image", static_cast<unsigned>(manifest.image_size));
     // Serialize close with the final verification/boot selection. A close that
     // loses to a successful commit receives Busy, never a false cancellation.
     xSemaphoreTake(commit_lock,portMAX_DELAY);
@@ -156,9 +158,13 @@ esp_err_t UploadBody(httpd_req_t* req) {
     if (finalized) { restart_requested=true;Status(WindowState::Committed); }
     xSemaphoreGive(commit_lock);
     if (!finalized) {
+        ESP_LOGE("WIFI_OTA", "Finalize failed: error=%u http_stack_min_free=%u",
+            static_cast<unsigned>(transfer.error()), static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
         cancelled=true;Status(WindowState::Failed,WindowResult::Invalid);
         return httpd_resp_send_err(req,HTTPD_400_BAD_REQUEST,"Image validation failed");
     }
+    ESP_LOGI("WIFI_OTA", "Image verified and boot target committed; http_stack_min_free=%u",
+        static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
     // The explicit request permits install+restart. The supervisor closes the
     // server/AP before reboot; an ACK lost here must never auto-retry upload.
     const auto result=httpd_resp_sendstr(req,"镜像已验签并写入，正在重启；请重新连接后确认固件版本与启动结果。");
@@ -280,7 +286,7 @@ esp_err_t StartNetworkOta(std::uint16_t peer,SessionCredentials& output,std::uin
         (rc=esp_wifi_set_config(WIFI_IF_AP,&config))!=ESP_OK||
         (rc=esp_wifi_start())!=ESP_OK) { Teardown();return rc; }
     }
-    httpd_config_t http=HTTPD_DEFAULT_CONFIG();http.stack_size=8192;http.max_open_sockets=SATORI_OTA_HTTP_MAX_OPEN_SOCKETS;
+    httpd_config_t http=HTTPD_DEFAULT_CONFIG();http.stack_size=kOtaHttpTaskStackBytes;http.max_open_sockets=SATORI_OTA_HTTP_MAX_OPEN_SOCKETS;
     http.recv_wait_timeout=3;http.send_wait_timeout=3;http.max_uri_handlers=3;http.lru_purge_enable=SATORI_OTA_HTTP_LRU_PURGE;
     if ((rc=httpd_start(&server,&http))!=ESP_OK) { Teardown();return rc; }
     const httpd_uri_t handler{.uri="/v1/ota/image",.method=HTTP_POST,.handler=Upload,.user_ctx=nullptr};

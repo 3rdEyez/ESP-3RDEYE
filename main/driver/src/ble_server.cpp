@@ -45,7 +45,22 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
+#include "gatt_layout.hpp"
+
 namespace satori::ble::internal {
+static StableGattLayout g_gatt_layout;
+static std::atomic<bool> g_marking_gatt_changed{false};
+static std::atomic<bool> g_gatt_store_failed{false};
+static ble_store_read_fn* g_store_read_delegate{nullptr};
+void OnGattRegistered(ble_gatt_register_ctxt* ctxt, void*) {
+    if (ctxt->op == BLE_GATT_REGISTER_OP_SVC && ble_uuid_u16(ctxt->svc.svc_def->uuid) == 0x1801)
+        g_gatt_layout.service = ctxt->svc.handle;
+    if (ctxt->op == BLE_GATT_REGISTER_OP_CHR && ble_uuid_u16(ctxt->chr.svc_def->uuid) == 0x1801) {
+        const auto uuid = ble_uuid_u16(ctxt->chr.chr_def->uuid);
+        if (uuid == 0x2a05) g_gatt_layout.changed = ctxt->chr.val_handle;
+        if (uuid == 0x2b2a) g_gatt_layout.hash = ctxt->chr.val_handle;
+    }
+}
 // UUID arrays are stored in Bluetooth little-endian order for NimBLE.
 static const ble_uuid128_t kServiceUuid = BLE_UUID128_INIT(0x00,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
 static const ble_uuid128_t kIdentityUuid = BLE_UUID128_INIT(0x01,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
@@ -86,9 +101,16 @@ bool AuthorizedSecurePeer(const ble_gap_conn_desc& desc) {
     PairingLock(); const bool authorized = g_runtime.pairing.IsAuthorized(peer, security); PairingUnlock();
     return authorized;
 }
+int GuardedStoreRead(int object_type, const ble_store_key* key, ble_store_value* value) {
+    const int rc = g_store_read_delegate ? g_store_read_delegate(object_type, key, value) : BLE_HS_ESTORE_FAIL;
+    if (rc != 0 && rc != BLE_HS_ENOENT && object_type == BLE_STORE_OBJ_TYPE_CCCD && g_marking_gatt_changed.load())
+        g_gatt_store_failed.store(true);
+    return rc;
+}
 int GuardedStoreWrite(int object_type, const ble_store_value* value) {
-    if (!g_runtime.store_write_delegate) return BLE_HS_ESTORE_FAIL;
-    const int rc = g_runtime.store_write_delegate(object_type, value);
+    const int rc = g_runtime.store_write_delegate ? g_runtime.store_write_delegate(object_type, value) : BLE_HS_ESTORE_FAIL;
+    if (rc != 0 && object_type == BLE_STORE_OBJ_TYPE_CCCD && g_marking_gatt_changed.load())
+        g_gatt_store_failed.store(true);
     if (rc != 0 && (object_type == BLE_STORE_OBJ_TYPE_OUR_SEC || object_type == BLE_STORE_OBJ_TYPE_PEER_SEC)) {
         g_runtime.pairing_storage_fault.store(true, std::memory_order_release);
         RecordFault(BondStorageFault, StopReason::StorageFault);
@@ -177,7 +199,7 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
             id = EncodeIdentity(ReadIdentity().id); return os_mbuf_append(ctxt->om, id.data(), id.size()) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
         if (ble_uuid_cmp(uuid, &kInfoUuid.u) == 0) {
-            DeviceInfo info; info.firmware_major = 0; info.firmware_minor = 2; info.firmware_patch = 8;
+            DeviceInfo info; info.firmware_major = 0; info.firmware_minor = 2; info.firmware_patch = 10;
             info.protocol_minor = 2;
             info.capabilities = 0x5f | kCapabilityPairingCodeManagement | kCapabilitySharedMultiBond;
             info.security_policy = 2;
@@ -433,12 +455,40 @@ bool InitializePairingStore() {
 }
 void OnSync() {
     if (ble_hs_id_infer_auto(0, &g_runtime.address_type) != 0) { ESP_LOGE(kTag, "BLE address setup failed"); return; }
+    if (ble_hs_cfg.store_read_cb != GuardedStoreRead) {
+        g_store_read_delegate = ble_hs_cfg.store_read_cb;
+        ble_hs_cfg.store_read_cb = GuardedStoreRead;
+    }
     if (ble_hs_cfg.store_write_cb != GuardedStoreWrite) {
         g_runtime.store_write_delegate = ble_hs_cfg.store_write_cb;
         ble_hs_cfg.store_write_cb = GuardedStoreWrite;
     }
     const bool safe = InitializePairingStore();
     if (!safe) { ESP_LOGE(kTag, "BLE identity/bond state is unsafe; advertising remains disabled"); return; }
+    // Conservatively mark the full database on every host startup. Existing
+    // subscribers keep a pending indication until their ACK while this host
+    // runs. The pinned SDK does not persist same-count CCCD updates to NVS,
+    // so every host startup regenerates pending changes after a reset. Hash
+    // is computed by NimBLE and handles stay fixed in this new layout.
+    g_gatt_store_failed.store(false);
+    const bool cache_ready = PrepareGattBoot(g_gatt_layout,
+        [] {
+            std::array<std::uint8_t, 16> hash{};
+            return ble_gatts_calculate_hash(hash.data()) == 0;
+        },
+        [](std::uint16_t start, std::uint16_t end) {
+            g_marking_gatt_changed.store(true);
+            ble_svc_gatt_changed(start, end);
+            g_marking_gatt_changed.store(false);
+        },
+        [] { return !g_gatt_store_failed.load(); });
+    if (!cache_ready) {
+        g_runtime.host_startup_ready = false;
+        ESP_LOGE(kTag, "GATT v2 layout/hash/change persistence validation failed; advertising disabled");
+        return;
+    }
+    ESP_LOGI(kTag, "GATT v2 registered: service=%u changed=%u hash=%u",
+        g_gatt_layout.service, g_gatt_layout.changed, g_gatt_layout.hash);
     StartAdvertising();
 }
 void HostTask(void*) { nimble_port_run(); nimble_port_freertos_deinit(); }
@@ -569,11 +619,12 @@ esp_err_t StartBlePrimary() {
     if (ota_worker!=ESP_OK) { (void)nimble_port_deinit();return ota_worker; }
 #endif
     ConfigureGattTable();
-    int rc = ble_gatts_count_cfg(kServices);
+    ble_hs_cfg.gatts_register_cb = OnGattRegistered;
+    const int rc = satori::ble::RegisterStableGatt(ble_svc_gatt_init, ble_svc_gap_init, [] {
+        const int count = ble_gatts_count_cfg(kServices);
+        return count == 0 ? ble_gatts_add_svcs(kServices) : count;
+    });
     if (rc != 0) { (void)nimble_port_deinit(); return ESP_FAIL; }
-    rc = ble_gatts_add_svcs(kServices);
-    if (rc != 0) { (void)nimble_port_deinit(); return ESP_FAIL; }
-    ble_svc_gap_init(); ble_svc_gatt_init();
     ble_svc_gap_device_name_set("SatoriEye");
     TaskHandle_t control_task = nullptr;
     if (xTaskCreate(ControlTask, "ble_control", 6144, nullptr, 9, &control_task) != pdPASS) {

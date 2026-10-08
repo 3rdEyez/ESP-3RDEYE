@@ -29,6 +29,10 @@ def sdk_command(tool):
         relative = {'espsecure': 'components/esptool_py/esptool/espsecure.py', 'idf': 'tools/idf.py'}[tool]
         script = Path(idf) / relative
         if not script.is_file():
+            # IDF 5.5.4 installs espsecure in its activated Python environment
+            # rather than vendoring the former components/esptool_py script.
+            if tool == 'espsecure' and environment:
+                return [python, '-m', 'espsecure']
             raise Rejected('Requested SDK tool is unavailable')
         return [python, str(script)]
     if tool == 'espsecure':

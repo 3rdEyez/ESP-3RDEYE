@@ -3,6 +3,7 @@
 import argparse,getpass,http.client,ipaddress,json,socket,threading,time,sys,warnings
 from pathlib import Path
 from ota_package import decode_package
+UPLOAD_TIMEOUT_SECONDS=120
 
 def endpoint(value):
     address=ipaddress.IPv4Address(value)
@@ -33,7 +34,7 @@ def probe_layout(host,timeout=5,connection_factory=http.client.HTTPConnection):
         return True
     finally:timer.cancel();conn.close()
 
-def upload_once(host,package,token,ap=False,timeout=30,connection_factory=http.client.HTTPConnection,on_post_start=None):
+def upload_once(host,package,token,ap=False,timeout=UPLOAD_TIMEOUT_SECONDS,connection_factory=http.client.HTTPConnection,on_post_start=None):
     # Local checks before any connection. A SHA check does not authenticate RSA.
     image,manifest=decode_package(package);host=endpoint(host)
     if not ap and (len(token)!=32 or any(c not in '0123456789abcdef' for c in token)):

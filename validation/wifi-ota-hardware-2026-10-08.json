@@ -1,0 +1,63 @@
+{
+  "date": "2026-10-08",
+  "board": "satori_c3_v1",
+  "firmware": "0.2.10",
+  "image_sha256": "7bf8831aebc161a6dc791f376fb104c4a95e58f12dc85e8f3f2c3b0528f14249",
+  "image_bytes": 1445888,
+  "official_signature_verified": true,
+  "transport": "BLE-authenticated window and LAN HTTP",
+  "remembered_network_reused": true,
+  "http_status": 200,
+  "post_count": 1,
+  "ota_restart_boot_verified": true,
+  "second_normal_boot_verified": true,
+  "running_slot": 1,
+  "ota_records": [
+    [
+      7,
+      2,
+      true
+    ],
+    [
+      8,
+      2,
+      true
+    ]
+  ],
+  "exact_signed_flash_readback": true,
+  "fallback_image_preserved": true,
+  "fallback_valid_record_preserved": true,
+  "protected_regions_preserved": true,
+  "http_task_stack_bytes": 24576,
+  "http_task_min_free_stack_bytes": 15708,
+  "no_panic_during_upload": true,
+  "characteristics": [
+    "0001",
+    "0002",
+    "0003",
+    "0004",
+    "0005",
+    "0006",
+    "0007",
+    "0008",
+    "0009"
+  ],
+  "database_hash": "4391198b62c9093fe04576da25899333",
+  "remembered_network_after_restart": true,
+  "maintenance_state_after_restart": 0,
+  "control_unclaimed_no_interpolation": true,
+  "final_ble_disconnected": true,
+  "port_closed": true,
+  "offline_python_test_count": 64,
+  "gatt_layout_case_count": 8,
+  "bootloader_rewritten": false,
+  "partition_table_rewritten": false,
+  "pairing_code_reset": false,
+  "bindings_cleared": false,
+  "success": true,
+  "limits": [
+    "Same-version signed LAN OTA tested; Android UI and AP fallback not included.",
+    "No power-loss or explicit rollback fault injection in this test."
+  ],
+  "failure_reproduced_on_029": "Stack protection fault during SDK signature verification before boot selection; original VALID slot booted normally."
+}

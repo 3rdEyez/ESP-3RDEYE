@@ -1,11 +1,12 @@
-> Local 0.2.6 adds computer-first LAN maintenance with RAM-only App provisioning; see [LAN OTA](lan-ota.md). Installed device remains signed 0.2.5. AP below is explicit fallback.
+> Computer-first LAN maintenance and 0.2.10 hardware acceptance are documented in [LAN OTA](lan-ota.md). AP below is explicit fallback.
 
-# Explicit BLE-controlled Wi-Fi OTA (local candidate)
+# Explicit BLE-controlled Wi-Fi OTA
 
-The local 0.2.5 implementation now includes the product entry: authenticated BLE
+The implementation includes the product entry: authenticated BLE
 open/close requests, real status/ACK reads, App instructions and a paused exit to
-a fresh control session. It has not been deployed. Installed dual-slot firmware
-remains 0.2.4. The built candidate is unsigned and must not be flashed as built.
+a fresh control session. Signed 0.2.10 completed computer-to-device LAN OTA on
+2026-10-08, including actual VALID selection and a second boot. Build output
+remains unsigned and must be signed and verified before installation.
 
 ## Protocol and product flow
 
@@ -82,12 +83,11 @@ exposes the maintenance extension. Activate existing IDF 5.5.4, then run
 `python tools/build_firmware.py ble_wifi_ota_prototype`. It explicitly reports
 unsigned output. Both dual-slot profile defaults are version-controlled.
 
-Remaining steps are authorized physical deployment: generate/independently back
-up one signing key, sign and verify a seed, fresh double backups and app-only USB
-write to the inactive slot, then real network/image-rejection testing. A signed
-future app's explicit rollback API may reject the unsigned 0.2.4 fallback;
-use a signed VALID seed for a separately approved no-output fault rehearsal.
-Current bootloader PENDING-reset rollback and USB recovery are different paths.
+The tested device has two signed 0.2.10 images and two VALID records after LAN
+OTA. The existing key was reused; no key, eFuse, partition table or bootloader
+was replaced. Host tests cover rejection policy, but power-loss, explicit
+rollback fault injection and AP fallback still require separate hardware
+acceptance. Bootloader PENDING-reset rollback and USB recovery are different paths.
 
 Official native policy:
 https://docs.espressif.com/projects/esp-idf/en/v5.5.4/esp32c3/security/secure-boot-v2.html#signed-app-verification-without-hardware-secure-boot

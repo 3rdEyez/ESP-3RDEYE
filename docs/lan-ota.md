@@ -2,11 +2,11 @@
 
 默认构建为双槽 OTA；USB、网页与 CLI 无线更新均要求精确已迁移布局。旧 factory 必须先显式运行 `tools/migrate_layout.py`，未知布局拒绝。不得用 `idf.py flash` 顺便重分区；见 [工具说明](../tools/README.md)。无参数构建是未签名开发产物，不能直接无线安装。
 
-# LAN OTA (local 0.2.8 experience implementation)
+# LAN OTA
 
 Normal control remains BLE. Networking starts only from an explicit, secure bonded
-maintenance OPEN. This local implementation is unsigned and uninstalled; the
-previous reviewed 0.2.7 artifact stays frozen and separate.
+maintenance OPEN. Updates require a signed image matching the running image's
+trusted public key, the board descriptor and the existing dual-OTA layout.
 
 ## Network choice and compatibility
 
@@ -70,8 +70,8 @@ schema/credentials is rejected, not another save/open.
 ## Upload from the computer
 
 1. Build the normal OTA profile and sign its app with the already established
-   signing process. This local candidate remains **unsigned and uninstalled**;
-   it is not the separate 0.2.6 deliberate-fault rollback image.
+   signing process. Build output is unsigned; only an explicitly signed and
+   verified application can be packaged for installation.
 2. Package the signed app with `python tools/ota_package.py signed-app.bin --output update.sota`.
 3. In the App explicitly open the LAN maintenance window on a network that the
    computer can reach. It displays the real device IPv4 and current window code.
@@ -105,10 +105,28 @@ sink tests remain required, alongside Flutter protocol/session/UI tests and all
 four firmware profiles. Actual Wi-Fi/DHCP/HTTP/expiry are still hardware
 acceptance items, not proven by these local tests.
 
-The most recently verified installed baseline is normal 0.2.6: it supports LAN
-but remains temporary-only with its original short deadline. New 0.2.8 behavior
-has not been signed or deployed. App merging, phone installation and real-device
-acceptance are deferred by the user.
+The 2026-10-08 hardware test confirmed BLE provisioning, remembered-network reuse
+and the LAN page on 0.2.9. It also reproduced a stack protection fault inside SDK
+RSA verification: the complete image reached the inactive slot, but no new boot
+record was committed. The previous VALID slot booted normally.
+
+0.2.10 allocates 24 KiB for the HTTP task, including the nested receive, Flash
+readback, image verification and RSA frames. Public `WIFI_OTA` logs identify
+verification/commit and report the task's minimum free stack. Do not reduce this
+allocation or change SDK verification without repeating signed-image hardware
+acceptance; mock sink tests do not exercise the SDK's stack usage. The desktop
+uploader uses the device's 120-second upload budget and still sends only one POST.
+
+The signed 0.2.10 hardware test completed on 2026-10-08: one LAN POST returned
+HTTP 200, the SDK verified RSA-PSS, and the device restarted from OTA1. Exact
+Flash readback matched the signed image, OTA1 sequence 8 was CRC-valid VALID,
+and OTA0 sequence 7 plus its signed 0.2.10 image remained intact for rollback.
+A second normal boot passed. Minimum free HTTP stack was 15,708 bytes out of
+24,576. Existing bonds, all 0001–0009 characteristics and the 16-byte Database
+Hash were preserved; the maintenance window closed with control unclaimed and
+no interpolation. See [public hardware evidence](../validation/wifi-ota-hardware-2026-10-08.json).
+This is firmware/computer OTA acceptance; it does not assert Android UI,
+power-loss fault injection or a full radio rejection matrix was tested.
 
 Desktop `lan-desktop-provision.py --terminal --remember-network` explicitly saves
 LKl on supported 0.2.8; `--terminal --saved-network` reuses it without asking for
@@ -118,9 +136,10 @@ public-key signature before password entry; it accepts any valid application
 version and can be combined with these flags. It requires one ordinary local
 INSTALL confirmation, not a special same-version/downgrade confirmation. No permanent service or listener is added.
 
-This local phase performs no signing, deployment, phone installation, network
-configuration, or access to real stored credentials. Users must personally enter
-and submit credentials when eventual hardware acceptance is authorized.
+For a remembered network, the maintenance window can be opened without reading
+the Wi-Fi password. Credentials and the window bearer must never be printed or
+included in a report. A missing HTTP response is an unknown install result:
+inspect the installed image and boot records before any further installation.
 
 ## Application version policy
 
