@@ -17,6 +17,7 @@ void ControlTask(void*) {
     bool servo_enabled = false;
     bool output_fault = false;
     const auto fail_output = [&]() {
+        RecordFault(PwmFault, StopReason::OutputFault);
         output_fault = true;
         g_runtime.output_fault = true;
         servo_enabled = false;
@@ -42,6 +43,7 @@ void ControlTask(void*) {
         return state;
     };
     const auto valid_work = [](const Outcome& op) {
+        if (g_runtime.ota_maintenance_requested.load(std::memory_order_acquire)) return false;
         portENTER_CRITICAL(&g_runtime.session_lock);
         const bool valid = g_runtime.session.connected() &&
             op.generation == g_runtime.session.generation() &&
@@ -70,6 +72,19 @@ void ControlTask(void*) {
     };
 
     while (true) {
+        g_runtime.control_cycles.fetch_add(1, std::memory_order_relaxed);
+        if (g_runtime.ota_maintenance_requested.load(std::memory_order_acquire)) {
+            const auto maintenance_epoch=g_runtime.ota_maintenance_epoch.load(std::memory_order_acquire);
+            std::uint32_t stopped_generation;
+            portENTER_CRITICAL(&g_runtime.session_lock);
+            stopped_generation=g_runtime.session.generation();
+            portEXIT_CRITICAL(&g_runtime.session_lock);
+            g_runtime.motion.Halt(stopped_generation);
+            motion_generation=stopped_generation;
+            g_runtime.ota_stopped_epoch.store(maintenance_epoch,std::memory_order_release);
+            vTaskDelayUntil(&last,pdMS_TO_TICKS(10));
+            continue; // no queue action, interpolated output, ARM or auto-resume
+        }
         const auto now = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
         const auto connection = g_runtime.connection.load(std::memory_order_acquire);
         if (g_runtime.pairing_storage_fault.load(std::memory_order_acquire) && connection != kNoConnection) {
@@ -87,7 +102,9 @@ void ControlTask(void*) {
         }
         std::uint32_t generation;
         bool expired;
+        bool had_owner;
         portENTER_CRITICAL(&g_runtime.session_lock);
+        had_owner = g_runtime.session.snapshot().token != 0;
         expired = g_runtime.session.TickLease(now);
         generation = g_runtime.session.generation();
         portEXIT_CRITICAL(&g_runtime.session_lock);
@@ -97,6 +114,8 @@ void ControlTask(void*) {
             publish_motion(generation, state_now().last_applied_sequence);
         }
         if (expired && connection != kNoConnection) {
+            // RELEASE's ACK window also expires here; it is not a lease loss.
+            if (had_owner) RecordStop(StopReason::LeaseExpired);
             (void)ble_gap_terminate(connection, BLE_ERR_REM_USER_CONN_TERM);
         }
         if (connection != kNoConnection &&
@@ -186,6 +205,8 @@ void ControlTask(void*) {
             const bool completed = g_runtime.session.CompleteAction(op.generation, op.request.sequence, true, completed_at, reply);
             portEXIT_CRITICAL(&g_runtime.session_lock);
             if (completed) {
+                if (opcode == Opcode::Halt) RecordStop(StopReason::Halt);
+                if (opcode == Opcode::Release) RecordStop(StopReason::Release);
                 g_runtime.motion.SetLastSequence(op.request.sequence);
                 publish_motion(op.generation, op.request.sequence);
                 Notify(reply);

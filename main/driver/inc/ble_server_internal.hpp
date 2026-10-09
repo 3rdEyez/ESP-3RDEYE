@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "ble_identity.h"
+#include "ble_diagnostics.hpp"
 #include "ble_motion.hpp"
 #include "ble_pairing.hpp"
 #include "ble_protocol.hpp"
@@ -32,6 +33,7 @@ struct WorkItem {
 // MotionEngine belongs only to ControlTask after task startup.
 struct Runtime {
     Session session{};
+    Diagnostics diagnostics{}; // Protected by session_lock; never persisted.
     MotionEngine motion{};
     PairingCore pairing{};
     QueueHandle_t work_queue{nullptr};
@@ -43,6 +45,12 @@ struct Runtime {
     std::atomic<bool> secure_peer{false};
     std::atomic<bool> identity_corrupt{false};
     std::atomic<bool> ble_started{false};
+    std::atomic<bool> boot_control_allowed{true};
+    std::atomic<bool> host_startup_ready{false};
+    std::atomic<bool> ota_maintenance_requested{false};
+    std::atomic<std::uint32_t> ota_maintenance_epoch{0};
+    std::atomic<std::uint32_t> ota_stopped_epoch{0};
+    std::atomic<std::uint32_t> control_cycles{0};
     std::atomic<bool> pairing_store_ready{false};
     std::atomic<std::uint8_t> bond_count{0};
     std::atomic<bool> output_fault{false};
@@ -50,6 +58,7 @@ struct Runtime {
     ble_store_write_fn* store_write_delegate{nullptr};
     std::uint8_t address_type{0}; // NimBLE host task only.
     std::atomic<std::uint16_t> connection{kNoConnection};
+    std::atomic<unsigned> connection_epoch{1};
     std::uint16_t tx_handle{kNoHandle}; // Set before host/task startup.
     std::uint16_t state_handle{kNoHandle};
     std::atomic<std::uint32_t> connected_at_ms{0};
@@ -69,6 +78,10 @@ LinkSecurity SecurityFromDesc(const ble_gap_conn_desc& desc);
 bool AuthorizedSecurePeer(const ble_gap_conn_desc& desc);
 void Notify(const std::array<std::uint8_t, kFrameSize>& bytes);
 void NotifySnapshotEvent(std::uint32_t sequence = 0);
+Diagnostics ReadDiagnostics();
+void RecordStop(StopReason reason);
+void RecordFault(std::uint8_t fault, StopReason reason);
+void RecordDisconnect(std::uint16_t reason);
 bool IsStartupConfigurationValid(Target& startup);
 void ControlTask(void*);
 void StartUsbTools();

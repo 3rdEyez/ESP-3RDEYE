@@ -164,3 +164,99 @@ void connect_wifi(void)
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();
 }
+
+#if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
+#include "connect_wifi.h"
+#include <atomic>
+#include "nvs.h"
+#include "saved_network_policy.hpp"
+#include "mbedtls/platform_util.h"
+namespace {
+std::atomic<bool> maintenance_wifi_started{false},maintenance_stopping{true},maintenance_ready{false},maintenance_failed{false};
+std::atomic<std::uint32_t> maintenance_ip{0};
+esp_netif_t* maintenance_sta=nullptr;
+esp_event_handler_instance_t maintenance_wifi_handler=nullptr,maintenance_ip_handler=nullptr;
+bool maintenance_wifi_initialized=false;
+unsigned maintenance_retries=0;
+void MaintenanceWifiEvent(void*,esp_event_base_t base,int32_t id,void* data) {
+    if (maintenance_stopping.load())return;
+    if (base==WIFI_EVENT&&id==WIFI_EVENT_STA_START) {
+        if(esp_wifi_connect()!=ESP_OK)maintenance_failed=true;
+    } else if(base==WIFI_EVENT&&id==WIFI_EVENT_STA_DISCONNECTED) {
+        const bool had_ip=maintenance_ready.exchange(false);maintenance_ip=0;
+        if(had_ip||maintenance_retries++>=2){maintenance_failed=true;return;}
+        if(esp_wifi_connect()!=ESP_OK)maintenance_failed=true;
+    } else if(base==IP_EVENT&&id==IP_EVENT_STA_GOT_IP) {
+        const auto* event=static_cast<ip_event_got_ip_t*>(data);
+        if(event->esp_netif!=maintenance_sta)return;
+        maintenance_ip=event->ip_info.ip.addr;maintenance_ready=maintenance_ip.load()!=0;
+    } else if(base==IP_EVENT&&id==IP_EVENT_STA_LOST_IP) {
+        maintenance_ready=false;maintenance_ip=0;maintenance_failed=true;
+    }
+}
+}
+void StopMaintenanceSta() {
+    maintenance_stopping=true;maintenance_ready=false;maintenance_ip=0;
+    if(maintenance_wifi_handler){(void)esp_event_handler_instance_unregister(WIFI_EVENT,ESP_EVENT_ANY_ID,maintenance_wifi_handler);maintenance_wifi_handler=nullptr;}
+    if(maintenance_ip_handler){(void)esp_event_handler_instance_unregister(IP_EVENT,ESP_EVENT_ANY_ID,maintenance_ip_handler);maintenance_ip_handler=nullptr;}
+    if(maintenance_wifi_initialized){if(maintenance_wifi_started)(void)esp_wifi_stop();(void)esp_wifi_deinit();maintenance_wifi_initialized=false;}
+    maintenance_wifi_started=false;
+    if(maintenance_sta){esp_netif_destroy_default_wifi(maintenance_sta);maintenance_sta=nullptr;}
+}
+esp_err_t StartMaintenanceSta(const char* ssid,const char* password) {
+    if(maintenance_wifi_initialized||maintenance_sta)return ESP_ERR_INVALID_STATE;
+    const auto ssid_size=std::strlen(ssid),password_size=std::strlen(password);
+    if(!ssid_size||ssid_size>32||password_size<8||password_size>63)return ESP_ERR_INVALID_ARG;
+    maintenance_stopping=false;maintenance_failed=false;maintenance_ready=false;maintenance_retries=0;maintenance_ip=0;
+    auto rc=esp_netif_init();if(rc!=ESP_OK&&rc!=ESP_ERR_INVALID_STATE){StopMaintenanceSta();return rc;}
+    rc=esp_event_loop_create_default();if(rc!=ESP_OK&&rc!=ESP_ERR_INVALID_STATE){StopMaintenanceSta();return rc;}
+    maintenance_sta=esp_netif_create_default_wifi_sta();if(!maintenance_sta){StopMaintenanceSta();return ESP_ERR_NO_MEM;}
+    wifi_init_config_t init=WIFI_INIT_CONFIG_DEFAULT();init.nvs_enable=0;
+    rc=esp_wifi_init(&init);if(rc!=ESP_OK){StopMaintenanceSta();return rc;}maintenance_wifi_initialized=true;
+    if((rc=esp_event_handler_instance_register(WIFI_EVENT,ESP_EVENT_ANY_ID,MaintenanceWifiEvent,nullptr,&maintenance_wifi_handler))!=ESP_OK||
+       (rc=esp_event_handler_instance_register(IP_EVENT,ESP_EVENT_ANY_ID,MaintenanceWifiEvent,nullptr,&maintenance_ip_handler))!=ESP_OK){StopMaintenanceSta();return rc;}
+    wifi_config_t config{};std::memcpy(config.sta.ssid,ssid,ssid_size);std::memcpy(config.sta.password,password,password_size);
+    config.sta.threshold.authmode=WIFI_AUTH_WPA2_PSK;config.sta.sae_pwe_h2e=WPA3_SAE_PWE_BOTH;
+    rc=esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    if(rc==ESP_OK)rc=esp_wifi_set_mode(WIFI_MODE_STA);
+    if(rc==ESP_OK)rc=esp_wifi_set_config(WIFI_IF_STA,&config);
+    mbedtls_platform_zeroize(&config,sizeof(config));
+    if(rc==ESP_OK)rc=esp_wifi_start();
+    if(rc!=ESP_OK){StopMaintenanceSta();return rc;}maintenance_wifi_started=true;return ESP_OK;
+}
+namespace {
+struct SavedNetwork { std::uint32_t schema{1};char ssid[33]{};char password[64]{}; };
+constexpr const char* kMaintenanceNamespace="maint_net";
+bool LoadMaintenanceNetwork(SavedNetwork& saved) {
+    nvs_handle_t handle{};
+    if(nvs_open(kMaintenanceNamespace,NVS_READONLY,&handle)!=ESP_OK)return false;
+    std::size_t size=sizeof(saved);const auto rc=nvs_get_blob(handle,"network",&saved,&size);nvs_close(handle);
+    return rc==ESP_OK&&size==sizeof(saved)&&saved.schema==1&&
+        std::memchr(saved.ssid,0,sizeof(saved.ssid))&&std::memchr(saved.password,0,sizeof(saved.password))&&
+        satori::ota::SavedMaintenanceCredentialsValid(saved.ssid,saved.password);
+}
+}
+bool HasSavedMaintenanceNetwork() {
+    nvs_handle_t handle{};if(nvs_open(kMaintenanceNamespace,NVS_READONLY,&handle)!=ESP_OK)return false;
+    std::size_t size=0;const auto rc=nvs_get_blob(handle,"network",nullptr,&size);nvs_close(handle);
+    return rc==ESP_OK&&size==sizeof(SavedNetwork);
+}
+esp_err_t SaveMaintenanceNetwork(const char* ssid,const char* password) {
+    if(!ssid||!password||!satori::ota::SavedMaintenanceCredentialsValid(ssid,password))return ESP_ERR_INVALID_ARG;
+    SavedNetwork saved;mbedtls_platform_zeroize(&saved,sizeof(saved));saved.schema=1;std::memcpy(saved.ssid,ssid,std::strlen(ssid));std::memcpy(saved.password,password,std::strlen(password));
+    nvs_handle_t handle{};auto rc=nvs_open(kMaintenanceNamespace,NVS_READWRITE,&handle);
+    if(rc==ESP_OK){rc=nvs_set_blob(handle,"network",&saved,sizeof(saved));if(rc==ESP_OK)rc=nvs_commit(handle);nvs_close(handle);}
+    mbedtls_platform_zeroize(&saved,sizeof(saved));return rc;
+}
+esp_err_t StartSavedMaintenanceSta() {
+    SavedNetwork saved;const bool valid=LoadMaintenanceNetwork(saved);
+    const auto rc=valid?StartMaintenanceSta(saved.ssid,saved.password):ESP_ERR_NOT_FOUND;
+    mbedtls_platform_zeroize(&saved,sizeof(saved));return rc;
+}
+bool MaintenanceStaReady(std::array<unsigned char,4>& ip) {
+    const auto address=maintenance_ip.load();
+    if(!maintenance_ready||maintenance_failed||!address)return false;
+    std::memcpy(ip.data(),&address,4);return true;
+}
+bool MaintenanceStaFailed(){return maintenance_failed.load();}
+#endif

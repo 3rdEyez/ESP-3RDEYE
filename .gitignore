@@ -114,8 +114,27 @@ sdkconfig*
 !sdkconfig.defaults
 !sdkconfig.ble_primary.defaults
 !sdkconfig.legacy_udp.defaults
+!sdkconfig.ble_dual_ota.defaults
+!sdkconfig.ble_wifi_ota_prototype.defaults
+!tests/**/sdkconfig.h
 
 *.bin
 *.exe
 *.*build
 *.dist
+
+# Local device identities, credentials, signing files and captures stay private.
+.local/
+private*/
+artifacts/
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.sota
+*.log
+__pycache__/
+device-config*.json
+usb-config*.json

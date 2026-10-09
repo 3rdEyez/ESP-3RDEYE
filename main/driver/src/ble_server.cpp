@@ -8,6 +8,12 @@
 #include "ble_motion.hpp"
 #include "ble_pairing.hpp"
 #include "ble_startup_profile.hpp"
+#include "maintenance_stop.hpp"
+#if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
+#include "wifi_ota_service.hpp"
+#include "connect_wifi.h"
+#include "mbedtls/platform_util.h"
+#endif
 #include "servo_group.h"
 #include "servor_input_adapter.h"
 #include "esp_partition_param.h"
@@ -39,7 +45,22 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
+#include "gatt_layout.hpp"
+
 namespace satori::ble::internal {
+static StableGattLayout g_gatt_layout;
+static std::atomic<bool> g_marking_gatt_changed{false};
+static std::atomic<bool> g_gatt_store_failed{false};
+static ble_store_read_fn* g_store_read_delegate{nullptr};
+void OnGattRegistered(ble_gatt_register_ctxt* ctxt, void*) {
+    if (ctxt->op == BLE_GATT_REGISTER_OP_SVC && ble_uuid_u16(ctxt->svc.svc_def->uuid) == 0x1801)
+        g_gatt_layout.service = ctxt->svc.handle;
+    if (ctxt->op == BLE_GATT_REGISTER_OP_CHR && ble_uuid_u16(ctxt->chr.svc_def->uuid) == 0x1801) {
+        const auto uuid = ble_uuid_u16(ctxt->chr.chr_def->uuid);
+        if (uuid == 0x2a05) g_gatt_layout.changed = ctxt->chr.val_handle;
+        if (uuid == 0x2b2a) g_gatt_layout.hash = ctxt->chr.val_handle;
+    }
+}
 // UUID arrays are stored in Bluetooth little-endian order for NimBLE.
 static const ble_uuid128_t kServiceUuid = BLE_UUID128_INIT(0x00,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
 static const ble_uuid128_t kIdentityUuid = BLE_UUID128_INIT(0x01,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
@@ -47,6 +68,12 @@ static const ble_uuid128_t kInfoUuid = BLE_UUID128_INIT(0x02,0x00,0x5a,0x14,0xb2
 static const ble_uuid128_t kRxUuid = BLE_UUID128_INIT(0x03,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
 static const ble_uuid128_t kTxUuid = BLE_UUID128_INIT(0x04,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
 static const ble_uuid128_t kStateUuid = BLE_UUID128_INIT(0x05,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
+static const ble_uuid128_t kDiagnosticsUuid = BLE_UUID128_INIT(0x06,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
+#if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
+static const ble_uuid128_t kSavedNetworkUuid = BLE_UUID128_INIT(0x09,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
+static const ble_uuid128_t kLanUuid = BLE_UUID128_INIT(0x08,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
+static const ble_uuid128_t kOtaUuid = BLE_UUID128_INIT(0x07,0x00,0x5a,0x14,0xb2,0x63,0x3e,0x9d,0x14,0x4f,0xb9,0x73,0xa0,0xf6,0x89,0x4d);
+#endif
 void StartAdvertising();
 
 PeerIdentity IdentityFromDesc(const ble_gap_conn_desc& desc) {
@@ -74,11 +101,19 @@ bool AuthorizedSecurePeer(const ble_gap_conn_desc& desc) {
     PairingLock(); const bool authorized = g_runtime.pairing.IsAuthorized(peer, security); PairingUnlock();
     return authorized;
 }
+int GuardedStoreRead(int object_type, const ble_store_key* key, ble_store_value* value) {
+    const int rc = g_store_read_delegate ? g_store_read_delegate(object_type, key, value) : BLE_HS_ESTORE_FAIL;
+    if (rc != 0 && rc != BLE_HS_ENOENT && object_type == BLE_STORE_OBJ_TYPE_CCCD && g_marking_gatt_changed.load())
+        g_gatt_store_failed.store(true);
+    return rc;
+}
 int GuardedStoreWrite(int object_type, const ble_store_value* value) {
-    if (!g_runtime.store_write_delegate) return BLE_HS_ESTORE_FAIL;
-    const int rc = g_runtime.store_write_delegate(object_type, value);
+    const int rc = g_runtime.store_write_delegate ? g_runtime.store_write_delegate(object_type, value) : BLE_HS_ESTORE_FAIL;
+    if (rc != 0 && object_type == BLE_STORE_OBJ_TYPE_CCCD && g_marking_gatt_changed.load())
+        g_gatt_store_failed.store(true);
     if (rc != 0 && (object_type == BLE_STORE_OBJ_TYPE_OUR_SEC || object_type == BLE_STORE_OBJ_TYPE_PEER_SEC)) {
         g_runtime.pairing_storage_fault.store(true, std::memory_order_release);
+        RecordFault(BondStorageFault, StopReason::StorageFault);
         ESP_LOGE(kTag, "BLE bond persistence failed; pairing and control are disabled until reboot");
     }
     return rc;
@@ -87,7 +122,11 @@ void Notify(const std::array<std::uint8_t, kFrameSize>& bytes) {
     const auto connection = g_runtime.connection.load(std::memory_order_acquire);
     if (connection == kNoConnection || g_runtime.tx_handle == kNoHandle || !g_runtime.event_subscribed) return;
     struct os_mbuf* om = ble_hs_mbuf_from_flat(bytes.data(), bytes.size());
-    if (om) (void)ble_gatts_notify_custom(connection, g_runtime.tx_handle, om);
+    if (!om || ble_gatts_notify_custom(connection, g_runtime.tx_handle, om) != 0) {
+        portENTER_CRITICAL(&g_runtime.session_lock);
+        IncrementDiagnosticCounter(g_runtime.diagnostics.notification_failure_count);
+        portEXIT_CRITICAL(&g_runtime.session_lock);
+    }
 }
 void NotifySnapshotEvent(std::uint32_t sequence) {
     Snapshot snapshot;
@@ -105,6 +144,52 @@ void NotifySnapshotEvent(std::uint32_t sequence) {
 int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_access_ctxt* ctxt, void*) {
     if (conn_handle != g_runtime.connection.load(std::memory_order_acquire)) return BLE_ATT_ERR_UNLIKELY;
     const ble_uuid_t* uuid = ctxt->chr ? ctxt->chr->uuid : nullptr;
+#if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
+    if (ble_uuid_cmp(uuid,&kSavedNetworkUuid.u)==0) {
+        ble_gap_conn_desc desc{};
+        if(ctxt->op!=BLE_GATT_ACCESS_OP_READ_CHR||ble_gap_conn_find(conn_handle,&desc)!=0||!AuthorizedSecurePeer(desc))return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+        const std::uint8_t value[]={1,3,static_cast<std::uint8_t>(HasSavedMaintenanceNetwork()),0};
+        return os_mbuf_append(ctxt->om,value,sizeof(value))==0?0:BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
+    if (ble_uuid_cmp(uuid,&kLanUuid.u)==0) {
+        ble_gap_conn_desc desc{};
+        if(ble_gap_conn_find(conn_handle,&desc)!=0||!AuthorizedSecurePeer(desc))return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+        if(ctxt->op==BLE_GATT_ACCESS_OP_READ_CHR) {
+            std::array<std::uint8_t,56> bytes{};const auto size=satori::ota::ReadLanOtaStatus(bytes.data(),bytes.size());
+            const int result=size&&os_mbuf_append(ctxt->om,bytes.data(),size)==0?0:BLE_ATT_ERR_INSUFFICIENT_RES;
+            mbedtls_platform_zeroize(bytes.data(),bytes.size());return result;
+        }
+        if(ctxt->op==BLE_GATT_ACCESS_OP_WRITE_CHR) {
+            std::array<std::uint8_t,107> bytes{};const auto size=OS_MBUF_PKTLEN(ctxt->om);
+            if(size<12||size>bytes.size())return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            if(os_mbuf_copydata(ctxt->om,0,size,bytes.data())!=0){mbedtls_platform_zeroize(bytes.data(),bytes.size());return BLE_ATT_ERR_UNLIKELY;}
+            satori::ota::LanCommand command{};const bool valid=satori::ota::DecodeLanCommand(bytes.data(),size,command);
+            mbedtls_platform_zeroize(bytes.data(),bytes.size());
+            const bool accepted=valid&&satori::ota::SubmitLanOtaCommand(conn_handle,command);
+            mbedtls_platform_zeroize(&command,sizeof(command));return accepted?0:BLE_ATT_ERR_UNLIKELY;
+        }
+        return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
+    }
+    if (ble_uuid_cmp(uuid,&kOtaUuid.u)==0) {
+        ble_gap_conn_desc desc{};
+        if (ble_gap_conn_find(conn_handle,&desc)!=0||!AuthorizedSecurePeer(desc)) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+        if (ctxt->op==BLE_GATT_ACCESS_OP_READ_CHR) {
+            std::array<std::uint8_t,114> bytes{};
+            const auto size=satori::ota::ReadWifiOtaStatus(bytes.data(),bytes.size());
+            const int result=size&&os_mbuf_append(ctxt->om,bytes.data(),size)==0?0:BLE_ATT_ERR_INSUFFICIENT_RES;
+            mbedtls_platform_zeroize(bytes.data(),bytes.size());return result;
+        }
+        if (ctxt->op==BLE_GATT_ACCESS_OP_WRITE_CHR) {
+            std::array<std::uint8_t,10> bytes{};
+            if (OS_MBUF_PKTLEN(ctxt->om)!=bytes.size()) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            if (os_mbuf_copydata(ctxt->om,0,bytes.size(),bytes.data())!=0) return BLE_ATT_ERR_UNLIKELY;
+            satori::ota::WindowCommand command{};
+            if (!satori::ota::DecodeWindowCommand(bytes.data(),bytes.size(),command)) return BLE_ATT_ERR_UNLIKELY;
+            return satori::ota::SubmitWifiOtaCommand(conn_handle,command)?0:BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+        return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
+    }
+#endif
     if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
         std::array<std::uint8_t, kFrameSize> bytes{};
         std::array<std::uint8_t, 16> id{};
@@ -114,7 +199,7 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
             id = EncodeIdentity(ReadIdentity().id); return os_mbuf_append(ctxt->om, id.data(), id.size()) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
         if (ble_uuid_cmp(uuid, &kInfoUuid.u) == 0) {
-            DeviceInfo info; info.firmware_major = 0; info.firmware_minor = 2; info.firmware_patch = 2;
+            DeviceInfo info; info.firmware_major = 0; info.firmware_minor = 2; info.firmware_patch = 10;
             info.protocol_minor = 2;
             info.capabilities = 0x5f | kCapabilityPairingCodeManagement | kCapabilitySharedMultiBond;
             info.security_policy = 2;
@@ -124,12 +209,18 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
             if (ble_gap_conn_find(conn_handle, &desc) != 0 || !AuthorizedSecurePeer(desc)) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
             Snapshot snapshot; portENTER_CRITICAL(&g_runtime.session_lock); snapshot = g_runtime.session.snapshot(); portEXIT_CRITICAL(&g_runtime.session_lock);
             bytes = EncodeSnapshot(snapshot); size = bytes.size();
+        } else if (ble_uuid_cmp(uuid, &kDiagnosticsUuid.u) == 0) {
+            ble_gap_conn_desc desc{};
+            if (ble_gap_conn_find(conn_handle, &desc) != 0 || !AuthorizedSecurePeer(desc)) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+            bytes = EncodeDiagnostics(ReadDiagnostics()); size = bytes.size();
         } else return BLE_ATT_ERR_READ_NOT_PERMITTED;
         return os_mbuf_append(ctxt->om, bytes.data(), size) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }
     if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR && ble_uuid_cmp(uuid, &kRxUuid.u) == 0) {
         ble_gap_conn_desc desc{};
         if (ble_gap_conn_find(conn_handle, &desc) != 0 || !AuthorizedSecurePeer(desc)) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+        // No control or persistent-management commands before startup confirms.
+        if (!g_runtime.boot_control_allowed) return BLE_ATT_ERR_UNLIKELY;
         if (g_runtime.output_fault.load(std::memory_order_acquire)) return BLE_ATT_ERR_UNLIKELY;
         const std::uint16_t packet_size = OS_MBUF_PKTLEN(ctxt->om);
         if (packet_size != kFrameSize) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
@@ -140,7 +231,7 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
         const auto now = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
         portENTER_CRITICAL(&g_runtime.session_lock);
         outcome = g_runtime.session.Handle(raw.data(), raw.size(), now,
-                                   g_runtime.startup_configured, g_runtime.startup_target, token ? token : 1);
+                                   g_runtime.startup_configured && g_runtime.boot_control_allowed, g_runtime.startup_target, token ? token : 1);
         portEXIT_CRITICAL(&g_runtime.session_lock);
         if (outcome.result == Result::BadLength) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
         if (outcome.result == Result::NotAuthorized) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
@@ -156,6 +247,7 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
                 queued = xQueueSend(g_runtime.work_queue, &item, 0);
             }
             if (queued != pdTRUE) {
+                RecordFault(WorkQueueFault, StopReason::QueueFault);
                 // The state machine has accepted this sequence, so enter fail-safe and do not acknowledge execution.
                 portENTER_CRITICAL(&g_runtime.session_lock); g_runtime.session.Disconnect(); portEXIT_CRITICAL(&g_runtime.session_lock);
                 g_runtime.secure_peer = false;
@@ -170,7 +262,7 @@ int GattAccess(std::uint16_t conn_handle, std::uint16_t attr_handle, ble_gatt_ac
     return ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR ? BLE_ATT_ERR_READ_NOT_PERMITTED : BLE_ATT_ERR_WRITE_NOT_PERMITTED;
 }
 
-static ble_gatt_chr_def kCharacteristics[6]{};
+static ble_gatt_chr_def kCharacteristics[10]{};
 static ble_gatt_svc_def kServices[2]{};
 void ConfigureGattTable() {
     kCharacteristics[0].uuid = &kIdentityUuid.u; kCharacteristics[0].access_cb = GattAccess; kCharacteristics[0].flags = BLE_GATT_CHR_F_READ;
@@ -184,6 +276,20 @@ void ConfigureGattTable() {
     kCharacteristics[4].uuid = &kStateUuid.u; kCharacteristics[4].access_cb = GattAccess;
     kCharacteristics[4].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC | BLE_GATT_CHR_F_READ_AUTHEN;
     kCharacteristics[4].val_handle = &g_runtime.state_handle;
+    kCharacteristics[5].uuid = &kDiagnosticsUuid.u; kCharacteristics[5].access_cb = GattAccess;
+    kCharacteristics[5].flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC | BLE_GATT_CHR_F_READ_AUTHEN;
+#if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
+    kCharacteristics[6].uuid=&kOtaUuid.u;kCharacteristics[6].access_cb=GattAccess;
+    kCharacteristics[6].flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_ENC|BLE_GATT_CHR_F_READ_AUTHEN|
+        BLE_GATT_CHR_F_WRITE|BLE_GATT_CHR_F_WRITE_ENC|BLE_GATT_CHR_F_WRITE_AUTHEN;
+#endif
+#if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
+    kCharacteristics[8].uuid=&kSavedNetworkUuid.u;kCharacteristics[8].access_cb=GattAccess;
+    kCharacteristics[8].flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_ENC|BLE_GATT_CHR_F_READ_AUTHEN;
+    kCharacteristics[7].uuid=&kLanUuid.u;kCharacteristics[7].access_cb=GattAccess;
+    kCharacteristics[7].flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_ENC|BLE_GATT_CHR_F_READ_AUTHEN|
+        BLE_GATT_CHR_F_WRITE|BLE_GATT_CHR_F_WRITE_ENC|BLE_GATT_CHR_F_WRITE_AUTHEN;
+#endif
     kServices[0].type = BLE_GATT_SVC_TYPE_PRIMARY; kServices[0].uuid = &kServiceUuid.u; kServices[0].characteristics = kCharacteristics;
 }
 
@@ -196,11 +302,18 @@ int GapEvent(ble_gap_event* event, void*) {
             return 0;
         }
         if (g_runtime.connection != kNoConnection) { ble_gap_terminate(event->connect.conn_handle, BLE_ERR_CONN_LIMIT); return 0; }
+        g_runtime.connection_epoch.fetch_add(1,std::memory_order_acq_rel);
         g_runtime.connection = event->connect.conn_handle; g_runtime.event_subscribed = false; g_runtime.secure_peer = false;
         g_runtime.connected_at_ms = esp_timer_get_time() / 1000;
         return 0;
     case BLE_GAP_EVENT_DISCONNECT:
         if (event->disconnect.conn.conn_handle == g_runtime.connection) {
+            portENTER_CRITICAL(&g_runtime.session_lock);
+            const bool had_owner = g_runtime.session.snapshot().token != 0;
+            portEXIT_CRITICAL(&g_runtime.session_lock);
+            if (had_owner) RecordStop(StopReason::LinkLost);
+            RecordDisconnect(static_cast<std::uint16_t>(event->disconnect.reason));
+            g_runtime.connection_epoch.fetch_add(1,std::memory_order_acq_rel);
             g_runtime.connection = kNoConnection; g_runtime.event_subscribed = false; g_runtime.secure_peer = false;
             portENTER_CRITICAL(&g_runtime.session_lock); g_runtime.session.Disconnect(); const auto gen = g_runtime.session.generation(); portEXIT_CRITICAL(&g_runtime.session_lock);
             WorkItem stop{}; stop.disconnected = true;
@@ -287,9 +400,11 @@ void StartAdvertising() {
     static const char name[] = "SatoriEye";
     fields.name = reinterpret_cast<const std::uint8_t*>(name); fields.name_len = sizeof(name) - 1; fields.name_is_complete = 1;
     fields.uuids128 = const_cast<ble_uuid128_t*>(&kServiceUuid); fields.num_uuids128 = 1; fields.uuids128_is_complete = 1;
-    ble_gap_adv_set_fields(&fields);
+    const int fields_rc = ble_gap_adv_set_fields(&fields);
+    if (fields_rc != 0) { g_runtime.host_startup_ready = false; ESP_LOGW(kTag, "BLE advertising fields failed (%d)", fields_rc); return; }
     g_runtime.adv_params = {}; g_runtime.adv_params.conn_mode = BLE_GAP_CONN_MODE_UND; g_runtime.adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
     const int rc = ble_gap_adv_start(g_runtime.address_type, nullptr, BLE_HS_FOREVER, &g_runtime.adv_params, GapEvent, nullptr);
+    g_runtime.host_startup_ready = rc == 0 || rc == BLE_HS_EALREADY;
     if (rc != 0 && rc != BLE_HS_EALREADY) ESP_LOGW(kTag, "BLE advertising restart failed (%d)", rc);
 }
 bool InitializePairingStore() {
@@ -301,12 +416,18 @@ bool InitializePairingStore() {
         return false;
     }
     if (!g_runtime.has_identity && !g_runtime.identity_corrupt && bond_count == 0) {
+#if CONFIG_SATORI_DUAL_OTA_BOOT_CONFIRM
+        // Migration must preserve an existing identity, never create credentials.
+        ESP_LOGE(kTag, "Existing identity missing; OTA validation will fail closed");
+        return false;
+#else
         BleIdentityData generated{};
         PairingLock();
         const auto provision = BleProvisionIdentity(generated);
         if (provision == ESP_OK) { g_runtime.identity = generated; g_runtime.has_identity = true; }
         PairingUnlock();
         if (provision != ESP_OK) { ESP_LOGE(kTag, "BLE auto-provision failed: %s", esp_err_to_name(provision)); g_runtime.identity_corrupt = true; }
+#endif
     }
     if (!g_runtime.has_identity || g_runtime.identity_corrupt) {
         ESP_LOGW(kTag, "BLE identity unavailable or malformed; advertising disabled pending USB recovery");
@@ -334,17 +455,48 @@ bool InitializePairingStore() {
 }
 void OnSync() {
     if (ble_hs_id_infer_auto(0, &g_runtime.address_type) != 0) { ESP_LOGE(kTag, "BLE address setup failed"); return; }
+    if (ble_hs_cfg.store_read_cb != GuardedStoreRead) {
+        g_store_read_delegate = ble_hs_cfg.store_read_cb;
+        ble_hs_cfg.store_read_cb = GuardedStoreRead;
+    }
     if (ble_hs_cfg.store_write_cb != GuardedStoreWrite) {
         g_runtime.store_write_delegate = ble_hs_cfg.store_write_cb;
         ble_hs_cfg.store_write_cb = GuardedStoreWrite;
     }
     const bool safe = InitializePairingStore();
     if (!safe) { ESP_LOGE(kTag, "BLE identity/bond state is unsafe; advertising remains disabled"); return; }
+    // Conservatively mark the full database on every host startup. Existing
+    // subscribers keep a pending indication until their ACK while this host
+    // runs. The pinned SDK does not persist same-count CCCD updates to NVS,
+    // so every host startup regenerates pending changes after a reset. Hash
+    // is computed by NimBLE and handles stay fixed in this new layout.
+    g_gatt_store_failed.store(false);
+    const bool cache_ready = PrepareGattBoot(g_gatt_layout,
+        [] {
+            std::array<std::uint8_t, 16> hash{};
+            return ble_gatts_calculate_hash(hash.data()) == 0;
+        },
+        [](std::uint16_t start, std::uint16_t end) {
+            g_marking_gatt_changed.store(true);
+            ble_svc_gatt_changed(start, end);
+            g_marking_gatt_changed.store(false);
+        },
+        [] { return !g_gatt_store_failed.load(); });
+    if (!cache_ready) {
+        g_runtime.host_startup_ready = false;
+        ESP_LOGE(kTag, "GATT v2 layout/hash/change persistence validation failed; advertising disabled");
+        return;
+    }
+    ESP_LOGI(kTag, "GATT v2 registered: service=%u changed=%u hash=%u",
+        g_gatt_layout.service, g_gatt_layout.changed, g_gatt_layout.hash);
     StartAdvertising();
 }
 void HostTask(void*) { nimble_port_run(); nimble_port_freertos_deinit(); }
 void OnHostReset(int reason) {
+    g_runtime.host_startup_ready = false;
+    RecordStop(StopReason::HostReset);
     ESP_LOGW(kTag, "BLE host reset (%d); invalidating live session", reason);
+    g_runtime.connection_epoch.fetch_add(1,std::memory_order_acq_rel);
     g_runtime.connection = kNoConnection;
     g_runtime.event_subscribed = false;
     g_runtime.secure_peer = false;
@@ -366,16 +518,83 @@ void OnHostReset(int reason) {
 }
 
 void StartBleMaintenanceConsole() { satori::ble::internal::StartUsbTools(); }
+void SetBleBootControlAllowed(bool allowed) { satori::ble::internal::g_runtime.boot_control_allowed = allowed; }
+unsigned BleOtaConnectionEpoch() { return satori::ble::internal::g_runtime.connection_epoch.load(std::memory_order_acquire); }
+bool BleOtaPeerStillAuthorized(unsigned short peer) {
+    using namespace satori::ble::internal;
+    ble_gap_conn_desc desc{};
+    return peer==g_runtime.connection.load(std::memory_order_acquire)&&
+        ble_gap_conn_find(peer,&desc)==0&&AuthorizedSecurePeer(desc);
+}
+bool BeginBleOtaMaintenance(unsigned short peer) {
+#if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
+    using namespace satori::ble::internal;
+    if (!g_runtime.boot_control_allowed||!BleStartupHealthy()||!BleOtaPeerStillAuthorized(peer)) return false;
+    bool expected=false;
+    if (!g_runtime.ota_maintenance_requested.compare_exchange_strong(expected,true)) return false;
+    g_runtime.boot_control_allowed=false;
+    portENTER_CRITICAL(&g_runtime.session_lock);
+    g_runtime.session.Disconnect();
+    portEXIT_CRITICAL(&g_runtime.session_lock);
+    if (g_runtime.work_queue) xQueueReset(g_runtime.work_queue);
+    g_runtime.ota_maintenance_epoch.fetch_add(1,std::memory_order_acq_rel);
+    return true;
+#else
+    (void)peer;return false;
+#endif
+}
+bool BleOtaMaintenanceStopped() {
+    const auto& runtime=satori::ble::internal::g_runtime;
+    const auto epoch=runtime.ota_maintenance_epoch.load(std::memory_order_acquire);
+    const auto requested=runtime.ota_maintenance_requested.load(std::memory_order_acquire);
+    const auto stopped=runtime.ota_stopped_epoch.load(std::memory_order_acquire);
+    const auto after=runtime.ota_maintenance_epoch.load(std::memory_order_acquire);
+    return satori::ble::MaintenanceStopAckMatches(requested,epoch,stopped,after);
+}
+void EndBleOtaMaintenance() {
+#if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
+    using namespace satori::ble::internal;
+    if (!g_runtime.ota_maintenance_requested) return;
+    // No target or ARM is restored. A connected authorized peer gets a fresh,
+    // unclaimed session; otherwise reconnection will establish one normally.
+    const auto peer=g_runtime.connection.load(std::memory_order_acquire);
+    ble_gap_conn_desc desc{};
+    const bool authorized=peer!=kNoConnection&&ble_gap_conn_find(peer,&desc)==0&&AuthorizedSecurePeer(desc);
+    if (g_runtime.work_queue) xQueueReset(g_runtime.work_queue);
+    portENTER_CRITICAL(&g_runtime.session_lock);
+    g_runtime.session.Disconnect();
+    if (authorized) g_runtime.session.Connect(PeerFromDesc(desc),g_runtime.event_subscribed,esp_timer_get_time()/1000);
+    portEXIT_CRITICAL(&g_runtime.session_lock);
+    g_runtime.ota_maintenance_epoch.fetch_add(1,std::memory_order_acq_rel);
+    g_runtime.ota_maintenance_requested=false;
+    g_runtime.boot_control_allowed=BleStartupHealthy();
+#endif
+}
+unsigned BleControlCycleCount() { return satori::ble::internal::g_runtime.control_cycles.load(std::memory_order_relaxed); }
+bool BleStartupHealthy() {
+    const auto& runtime = satori::ble::internal::g_runtime;
+    return runtime.ble_started && runtime.host_startup_ready && runtime.pairing_store_ready &&
+           runtime.has_identity && runtime.startup_configured && !runtime.identity_corrupt &&
+           !runtime.output_fault && !runtime.pairing_storage_fault;
+}
+
 
 esp_err_t StartBlePrimary() {
     using namespace satori::ble::internal;
+    g_runtime.diagnostics.reset_reason = static_cast<std::uint8_t>(esp_reset_reason()); // Before tasks start.
     g_runtime.has_identity = BleLoadIdentity(g_runtime.identity);
     g_runtime.identity_corrupt = !g_runtime.has_identity && BleIdentityHasAnyMaterial();
-    if (g_runtime.identity_corrupt)
+    if (g_runtime.identity_corrupt) {
+        RecordFault(satori::ble::IdentityFault, satori::ble::StopReason::StorageFault);
         ESP_LOGE(kTag, "Partial BLE identity record found; pairing is disabled until USB recovery.");
+    }
     if (g_runtime.work_queue == nullptr) g_runtime.work_queue = xQueueCreate(kPendingCommands, sizeof(WorkItem));
     if (!g_runtime.work_queue) return ESP_ERR_NO_MEM;
     g_runtime.startup_configured = IsStartupConfigurationValid(g_runtime.startup_target);
+    if (!g_runtime.startup_configured) {
+        g_runtime.diagnostics.faults |= satori::ble::StartupConfigurationFault; // Before tasks start.
+        ESP_LOGW(kTag, "Startup configuration invalid; ARM remains disabled");
+    }
     int result = nimble_port_init(); if (result != ESP_OK) return result;
     g_runtime.pairing_mutex = xSemaphoreCreateMutex();
     if (!g_runtime.pairing_mutex) { (void)nimble_port_deinit(); return ESP_ERR_NO_MEM; }
@@ -395,12 +614,17 @@ esp_err_t StartBlePrimary() {
     ble_hs_cfg.sm_sc_only = 1;
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+#if CONFIG_SATORI_WIFI_OTA_PROTOTYPE
+    const auto ota_worker=satori::ota::StartWifiOtaControlWorker();
+    if (ota_worker!=ESP_OK) { (void)nimble_port_deinit();return ota_worker; }
+#endif
     ConfigureGattTable();
-    int rc = ble_gatts_count_cfg(kServices);
+    ble_hs_cfg.gatts_register_cb = OnGattRegistered;
+    const int rc = satori::ble::RegisterStableGatt(ble_svc_gatt_init, ble_svc_gap_init, [] {
+        const int count = ble_gatts_count_cfg(kServices);
+        return count == 0 ? ble_gatts_add_svcs(kServices) : count;
+    });
     if (rc != 0) { (void)nimble_port_deinit(); return ESP_FAIL; }
-    rc = ble_gatts_add_svcs(kServices);
-    if (rc != 0) { (void)nimble_port_deinit(); return ESP_FAIL; }
-    ble_svc_gap_init(); ble_svc_gatt_init();
     ble_svc_gap_device_name_set("SatoriEye");
     TaskHandle_t control_task = nullptr;
     if (xTaskCreate(ControlTask, "ble_control", 6144, nullptr, 9, &control_task) != pdPASS) {

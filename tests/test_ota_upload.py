@@ -1,0 +1,86 @@
+import contextlib,io,json,struct,sys,unittest,socket,threading,time,http.client,getpass,warnings
+from unittest.mock import patch
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
+import ota_package,ota_upload
+class Sock:
+ def settimeout(self,t):pass
+ def shutdown(self,*a):pass
+class Connection:
+ instances=[];fail=False
+ def __init__(self,*a,**kw):self.sock=Sock();self.requests=[];self.closed=False;self.__class__.instances.append(self)
+ def connect(self):pass
+ def request(self,*a,**kw):
+  self.requests.append((a,kw))
+  if self.fail:raise TimeoutError('sensitive-secret')
+ def getresponse(self):return self
+ status=200
+ def read(self,n):return b'{"layout":"dual-ota","update_allowed":true}' if self.requests[-1][0][0]=='GET' else b'sensitive-server-response'
+ def close(self):self.closed=True
+class Tests(unittest.TestCase):
+ def package(self):
+  image=bytearray(336);image[0]=0xe9;struct.pack_into('<H',image,12,5);struct.pack_into('<I',image,32,0xabcd5432);image[48:53]=b'0.2.6';image[288:336]=ota_package.BOARD_TAG
+  return ota_package.encode_package(bytes(image),'esp-idf-sbv2-rsa3072')[0]
+ def setUp(self):Connection.instances=[];Connection.fail=False
+ def test_one_post_no_secret_result(self):
+  token='a'*32;r=ota_upload.upload_once('192.168.1.80',self.package(),token,connection_factory=Connection)
+  self.assertEqual([c.requests[0][0][0] for c in Connection.instances],['GET','POST']);self.assertTrue(r['submitted_for_restart']);self.assertFalse(r['upgrade_verified']);self.assertNotIn(token,json.dumps(r));self.assertTrue(Connection.instances[0].closed)
+ def test_timeout_does_not_retry(self):
+  Connection.fail=True
+  with self.assertRaises(TimeoutError):ota_upload.upload_once('192.168.1.80',self.package(),'a'*32,connection_factory=Connection)
+  self.assertEqual(len(Connection.instances[0].requests),1);self.assertTrue(Connection.instances[0].closed)
+ def test_invalid_input_no_connect(self):
+  for host,token in [('8.8.8.8','a'*32),('192.168.1.80','secret'),('0.0.0.0','a'*32)]:
+   with self.assertRaises(ValueError):ota_upload.upload_once(host,self.package(),token,connection_factory=Connection)
+  self.assertEqual(Connection.instances,[])
+ def test_package_preflight_no_connect(self):
+  with self.assertRaises(ValueError):ota_upload.upload_once('192.168.1.80',b'bad','a'*32,connection_factory=Connection)
+  self.assertEqual(Connection.instances,[])
+ def test_real_loopback_stalled_response_has_total_deadline(self):
+  listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen(1);port=listener.getsockname()[1];release=threading.Event();accepted=[]
+  def server():
+   peer,_=listener.accept();accepted.append(True)
+   try:peer.recv(4096);release.wait(2)
+   finally:peer.close()
+  thread=threading.Thread(target=server,daemon=True);thread.start();started=time.monotonic()
+  try:
+   with self.assertRaises((TimeoutError,OSError,http.client.HTTPException)):
+    ota_upload.upload_once('127.0.0.1',self.package(),'a'*32,timeout=.2,connection_factory=lambda host,unused,timeout:http.client.HTTPConnection(host,port,timeout=timeout))
+   self.assertLess(time.monotonic()-started,1);self.assertEqual(accepted,[True])
+  finally:release.set();listener.close();thread.join(timeout=1)
+ def test_non_tty_hidden_code_refused_without_input(self):
+  with patch.object(sys,'stdin',io.StringIO()),patch.object(getpass,'getpass',side_effect=AssertionError()):
+   with self.assertRaises(ValueError):ota_upload.hidden_token()
+ def test_echo_warning_stops_before_http(self):
+  class Tty(io.StringIO):
+   def isatty(self):return True
+  def input_warning(*args):warnings.warn('synthetic-secret',getpass.GetPassWarning)
+  output=Tty();error=Tty()
+  with patch.object(sys,'stdin',Tty()),patch.object(sys,'stdout',output),patch.object(sys,'stderr',error),patch.object(sys,'argv',['upload','fake.sota','--host','192.168.1.80','--install-and-restart']),patch.object(Path,'read_bytes',return_value=self.package()),patch.object(getpass,'getpass',side_effect=input_warning),patch.object(ota_upload,'upload_once',side_effect=AssertionError()):
+   self.assertEqual(ota_upload.main(),2)
+  self.assertNotIn('synthetic-secret',output.getvalue()+error.getvalue());self.assertIn('GetPassWarning',output.getvalue())
+ def test_hidden_token_tty_success_no_secret_output(self):
+  class Tty(io.StringIO):
+   def isatty(self):return True
+  output=Tty()
+  with patch.object(sys,'stdin',Tty()),patch.object(sys,'stdout',output),patch.object(sys,'stderr',Tty()),patch.object(getpass,'getpass',return_value='a'*32):
+   self.assertEqual(ota_upload.hidden_token(),'a'*32)
+  self.assertEqual(output.getvalue(),'')
+ def test_ap_explicit(self):
+  r=ota_upload.upload_once('192.168.4.1',self.package(),'',True,connection_factory=Connection)
+  self.assertTrue(r['submitted_for_restart']);self.assertNotIn('X-Satori-Window',Connection.instances[-1].requests[0][1]['headers'])
+if __name__=='__main__':unittest.main()
+
+class LayoutTests(unittest.TestCase):
+ package=Tests.package
+ setUp=Tests.setUp
+ def test_factory_unknown_missing_endpoint_and_untyped_allow_never_post(self):
+  for code,body in ((200,b'{"layout":"factory","update_allowed":false}'),(200,b'{"layout":"unknown","update_allowed":false}'),(404,b'not supported'),(200,b'{"layout":"dual-ota","update_allowed":1}')):
+   Connection.instances=[]
+   class Bad(Connection):
+    status=code
+    def read(self,n):return body
+   callback=[]
+   with self.assertRaises(ota_upload.MigrationRequired):ota_upload.upload_once('192.168.1.80',self.package(),'a'*32,connection_factory=Bad,on_post_start=lambda:callback.append(True))
+   self.assertEqual(callback,[])
+   self.assertEqual([request[0][0] for connection in Connection.instances for request in connection.requests],['GET'])

@@ -1,0 +1,2 @@
+#pragma once
+#define CONFIG_SATORI_DUAL_OTA_BOOT_CONFIRM 1

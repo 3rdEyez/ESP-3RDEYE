@@ -3,6 +3,7 @@
 #include "../../main/ble/ble_session.hpp"
 #include "../../main/ble/ble_motion.hpp"
 #include "../../main/ble/ble_startup_profile.hpp"
+#include "../../main/ble/ble_diagnostics.hpp"
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -487,6 +488,17 @@ static void VerifyStateScenarios() {
 }
 
 int main() {
+    Diagnostics diagnostics{3, StopReason::LeaseExpired, PwmFault, 0x12345678, 9, 2, 5, 0x213};
+    const auto encoded = EncodeDiagnostics(diagnostics);
+    assert(encoded == Command("0103040178563412090000000200050013020000"));
+    // Diagnostic observation cannot renew a session lease or initialize motion.
+    Session observed; Claim(observed);
+    (void)EncodeDiagnostics(diagnostics);
+    assert(observed.TickLease(6000));
+    assert(observed.snapshot().valid_mask == 0);
+    std::uint16_t saturated = UINT16_MAX;
+    IncrementDiagnosticCounter(saturated);
+    assert(saturated == UINT16_MAX);
     VerifyCommandAndReadVectors();
     VerifyManagementVectors();
     VerifySharedPairingVectors();

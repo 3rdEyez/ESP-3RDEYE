@@ -16,6 +16,7 @@
 #include "esp_flash.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_app_desc.h"
 #include "nvs_bootstrap.h"
 
 #include "connect_wifi.h"
@@ -27,6 +28,7 @@
 #include "esp_partition_param.h"
 #if CONFIG_SATORI_TRANSPORT_BLE_PRIMARY
 #include "ble_server.h"
+#include "ota_boot_confirm.h"
 #endif
 
 static const char *TAG = "APP MAIN";
@@ -66,10 +68,16 @@ void greeting(void)
 extern "C" void app_main(void)
 {
     greeting();
+    const auto* app = esp_app_get_description();
+    ESP_LOGI(TAG, "Boot reset_reason=%u, build=%s, elf_id=%02x%02x%02x%02x",
+             static_cast<unsigned>(esp_reset_reason()), app->version,
+             app->app_elf_sha256[0], app->app_elf_sha256[1], app->app_elf_sha256[2], app->app_elf_sha256[3]);
 #if CONFIG_SATORI_TRANSPORT_BLE_PRIMARY
+    if (!PrepareOtaBootConfirmation()) { StartBleMaintenanceConsole(); return; }
     const esp_err_t nvs_result = InitializeSharedNvs();
     if (nvs_result != ESP_OK) {
         ESP_LOGE(TAG, "NVS unavailable (%s). No erase was attempted; use USB maintenance after reviewing storage state.", esp_err_to_name(nvs_result));
+        FailOtaBootConfirmation("nvs");
         StartBleMaintenanceConsole();
         return;
     }
@@ -77,8 +85,10 @@ extern "C" void app_main(void)
     const esp_err_t ble_result = StartBlePrimary();
     if (ble_result != ESP_OK) {
         ESP_LOGE(TAG, "BLE service did not start (%s); leaving outputs disabled.", esp_err_to_name(ble_result));
+        FailOtaBootConfirmation("BLE init");
         return;
     }
+    CompleteOtaBootConfirmation();
 #else
     const esp_err_t nvs_result = InitializeSharedNvs();
     if (nvs_result != ESP_OK) {
